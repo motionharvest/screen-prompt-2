@@ -103,10 +103,27 @@ def load(model_name: str, quantization: str) -> None:
     emit({"event": "status", "state": "loading",
           "detail": "Loading model…"})
     try:
+        # Best effort, and deliberately not fatal. This only produces the
+        # download percentage, and it reaches into huggingface_hub internals
+        # that are not a public API — so a version that moves them should cost
+        # you the readout, not the ability to transcribe. It also used to be the
+        # first third-party import in the process, which meant *any* incomplete
+        # environment surfaced as "No module named huggingface_hub" no matter
+        # which package was actually missing.
         trace("installing progress hook")
-        _install_progress_hook()
+        try:
+            _install_progress_hook()
+        except Exception as exc:  # noqa: BLE001 - a missing extra is not fatal
+            trace(f"progress hook unavailable: {exc!r}")
+
         trace("importing onnx_asr")
-        import onnx_asr
+        try:
+            import onnx_asr
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                f"The Python environment is incomplete ({exc.name} is missing)."
+                " Run `npm run setup` to finish installing it."
+            ) from exc
 
         kwargs = {}
         if quantization:

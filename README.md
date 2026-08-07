@@ -69,6 +69,16 @@ Setup downloads two large things: Electron's ~100 MB binary (fetched during
 `npm run setup`, because Electron 43 otherwise pulls it lazily on first launch)
 and the ~600 MB quantized model, on first launch.
 
+**If the app says the Python environment is incomplete**, `npm run setup` did not
+finish — most often because `venv` or `pip` was missing at the time. Install the
+packages above and re-run it; setup now verifies the imports before claiming
+success, so it fails at install time rather than at first launch. To start over
+cleanly:
+
+```sh
+rm -rf .venv && npm run setup
+```
+
 ```sh
 npm install
 npm run setup     # creates .venv and installs onnx-asr

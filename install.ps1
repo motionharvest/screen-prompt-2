@@ -41,6 +41,20 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 & ".venv\Scripts\python.exe" -m pip install --upgrade pip
 & ".venv\Scripts\python.exe" -m pip install "onnx-asr[cpu,hub]>=0.6.0"
 
+# Verified rather than assumed. An environment that is missing one package does
+# not complain until the app starts, and then it names whichever module happened
+# to be imported first — which is how a half-finished install reports itself as
+# "No module named huggingface_hub" regardless of what actually went wrong.
+$importError = & ".venv\Scripts\python.exe" -c "import onnx_asr, huggingface_hub" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "The Python environment did not finish installing:" -ForegroundColor Red
+    $importError | Select-Object -Last 3
+    Write-Host "Run this by hand to see the full error:" -ForegroundColor Red
+    Write-Host "  .venv\Scripts\python.exe -m pip install ""onnx-asr[cpu,hub]>=0.6.0""" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Python environment OK." -ForegroundColor Green
+
 Write-Host ""
 Write-Host "Done. Start the app with: npm start" -ForegroundColor Green
 Write-Host "The Parakeet v2 model (~600 MB quantized) downloads on first launch."

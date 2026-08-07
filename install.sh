@@ -97,6 +97,19 @@ fi
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install "onnx-asr[cpu,hub]>=0.6.0"
 
+# Verified rather than assumed. An environment that is missing one package does
+# not complain until the app starts, and then it names whichever module happened
+# to be imported first — which is how a half-finished install reports itself as
+# "No module named huggingface_hub" regardless of what actually went wrong.
+if ! import_error=$(.venv/bin/python -c "import onnx_asr, huggingface_hub" 2>&1); then
+  red "The Python environment did not finish installing:"
+  printf '%s\n' "$import_error" | tail -3
+  red "Run this by hand to see the full error:"
+  red "  .venv/bin/python -m pip install 'onnx-asr[cpu,hub]>=0.6.0'"
+  exit 1
+fi
+green "Python environment OK."
+
 chmod +x launch-app.sh 2>/dev/null || true
 
 cyan "== Optional helpers =="
