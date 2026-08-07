@@ -19,6 +19,11 @@ no figures — just voice to text.
   (`Ctrl+Alt+D`), function keys, or a lone modifier like right&nbsp;Ctrl.
 - **Toggle or hold** — press to start / press to stop, or record only while
   the key is held (push-to-talk).
+- **Escape cancels** — pressed while recording, the audio is thrown away and
+  nothing is transcribed. Pressed while it is already transcribing, the model
+  cannot be interrupted, so its answer is discarded instead: either way nothing
+  is pasted, typed or put on the clipboard. Escape does nothing special when
+  the app is idle.
 - **Starts listening instantly** — the microphone is held open between
   recordings (a toggle, on by default), so the shortcut begins capturing in the
   same frame instead of waiting ~230 ms for an audio device to open. See
@@ -313,6 +318,10 @@ the success line. Without that a keyword can only ever claim it worked.
   function key).
 - Recordings shorter than ~0.35 s are treated as an accidental tap and
   discarded with a cancel tone.
+- Escape is observed rather than swallowed, like the shortcut itself, so the
+  focused app still receives it. It is only acted on while recording or
+  transcribing, so closing a dialog with Escape the rest of the time is
+  unaffected.
 - Closing the settings window keeps the app in the tray; quit from the tray
   menu.
 - Clicking the **Last transcription** box copies it back to the clipboard —

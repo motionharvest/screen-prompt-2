@@ -352,7 +352,13 @@ window.api.onOverlayCmd(async (cmd) => {
       setPill('', '');
       break;
 
+    // Sent both for a recording too short to be meant, where capture has
+    // already stopped, and for Escape, where it has not. finishRecording is
+    // idempotent, so one branch covers both — and the samples are dropped on
+    // the floor rather than sent, which is what makes Escape a real cancel.
     case 'cancel':
+      wantRecording = false;
+      finishRecording();
       phase = 'idle';
       stopAnim();
       setPill('', 'Cancelled');

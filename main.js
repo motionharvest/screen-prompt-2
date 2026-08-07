@@ -993,6 +993,29 @@ function onShortcutRelease() {
   if (settings.mode === 'hold') stopRecording();
 }
 
+// Bumped by every cancellation. A transcription already in flight compares the
+// value it started with against the current one and drops its result if they
+// differ — the model cannot be interrupted, so the only way to honour Escape
+// during "Transcribing…" is to ignore the answer when it arrives.
+let cancelGeneration = 0;
+
+// Escape means stop, whatever is happening: throw the recording away, or
+// abandon a transcription that is already running. Returns whether there was
+// anything to stop, so an Escape pressed while idle stays an ordinary keystroke.
+function cancelEverything() {
+  if (appState === 'idle') return false;
+  trace('cancelEverything', 'state=' + appState);
+  cancelGeneration += 1;
+  stopFollowingCursor();
+  ducker.restore();
+  appState = 'idle';
+  // The overlay stops capturing and discards the audio on this command, so no
+  // 'stop' is sent and handleAudio is never reached for a cancelled recording.
+  finishOverlay({ cmd: 'cancel', sounds: settings.sounds }, 1200);
+  broadcastState();
+  return true;
+}
+
 // The shortcut modifier turned out to be part of a combination, so the
 // recording started on its press was never wanted. Dropped without a sound and
 // without a message: this fires during ordinary typing, and a cancel tone every
@@ -1043,9 +1066,16 @@ async function handleAudio(buffer, duration, cancelled, error) {
     return;
   }
   const wavPath = path.join(os.tmpdir(), `screen-prompt-2-${Date.now()}.wav`);
+  // Captured before the await, compared after it. Escape during "Transcribing…"
+  // cannot stop the model, so this is what stops its answer being used.
+  const generation = cancelGeneration;
   try {
     fs.writeFileSync(wavPath, Buffer.from(buffer));
     const raw = (await sidecar.transcribe(wavPath)).trim();
+    if (generation !== cancelGeneration) {
+      trace('handleAudio abandoned', 'cancelled while transcribing');
+      return;
+    }
     const text = settings.tidy ? tidyTranscript(raw) : raw;
     // A recording that was nothing but "um" tidies down to nothing at all.
     if (!text) throw new Error('No speech recognized.');
@@ -1070,6 +1100,9 @@ async function handleAudio(buffer, duration, cancelled, error) {
     backToIdle();
     finishOverlay({ cmd: 'done', sounds: settings.sounds, text, verb }, 1600);
   } catch (err) {
+    // A transcription that failed *and* was cancelled has nothing to report:
+    // the "Cancelled" pill is already up and an error over it would be noise.
+    if (generation !== cancelGeneration) return;
     backToIdle();
     finishOverlay({ cmd: 'error', sounds: settings.sounds, message: String(err.message || err) }, 2600);
   } finally {
@@ -1312,8 +1345,13 @@ if (!gotLock) {
       if (e.keycode === settings.shortcut.keycode) {
         trace('hook down', e.keycode, 'capturing=' + capture.active, 'state=' + appState);
       }
-      if (capture.active) capture.keydown(e.keycode);
-      else matcher.keydown(e.keycode);
+      if (capture.active) { capture.keydown(e.keycode); return; }
+      // Escape cancels a recording or a transcription outright. Only consumed
+      // when there was something to cancel, so it stays an ordinary Escape the
+      // rest of the time — and it is observed rather than swallowed either way,
+      // so the focused app still receives it.
+      if (e.keycode === UiohookKey.Escape && cancelEverything()) return;
+      matcher.keydown(e.keycode);
     });
     uIOhook.on('keyup', (e) => {
       if (e.keycode === settings.shortcut.keycode) {
