@@ -11,6 +11,13 @@ if (-not (Test-Path "node_modules")) {
     Write-Host "node_modules already present, skipping."
 }
 
+# Electron 43 fetches its ~100 MB binary lazily on first use rather than from a
+# postinstall hook, so `npm install` finishing does not mean it is ready. Pull it
+# here, where a download is expected, instead of letting the first `npm start`
+# stall with no explanation.
+node -e "require('electron')"
+if (-not $?) { Write-Host "(Electron binary will download on first start instead.)" }
+
 Write-Host "== Python environment ==" -ForegroundColor Cyan
 $python = $null
 foreach ($candidate in @("py -3", "python")) {

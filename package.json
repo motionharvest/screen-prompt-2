@@ -31,6 +31,6 @@
     "uiohook-napi": "^1.5.4"
   },
   "devDependencies": {
-    "electron": "^34.0.0"
+    "electron": "^43.3.0"
   }
 }

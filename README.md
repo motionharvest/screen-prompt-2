@@ -51,7 +51,23 @@ no figures — just voice to text.
 
 ## Install
 
-Requires **Node 18+** and **Python 3.10+** on every platform.
+Requires **Node 18+** and **Python 3.10+ with `venv` and `pip`** on every
+platform. Transcription runs in a Python sidecar, so Python is not optional —
+and most Linux distributions package `venv` and `pip` separately from the base
+`python3`, which is the usual reason setup stops:
+
+```sh
+sudo apt install python3-venv python3-pip     # Debian, Ubuntu
+sudo dnf install python3-pip                  # Fedora
+sudo pacman -S python-pip                     # Arch
+```
+
+`install.sh` checks for both and prints the right command for your distribution
+rather than letting pip fail later with something less obvious.
+
+Setup downloads two large things: Electron's ~100 MB binary (fetched during
+`npm run setup`, because Electron 43 otherwise pulls it lazily on first launch)
+and the ~600 MB quantized model, on first launch.
 
 ```sh
 npm install
