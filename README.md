@@ -309,10 +309,18 @@ the success line. Without that a keyword can only ever claim it worked.
   menu.
 - Clicking the **Last transcription** box copies it back to the clipboard —
   useful once something else has overwritten it.
-- Ducking restores volumes when the helper's stdin closes, so killing the app
+- Ducking restores volumes when the helper's stdin closes, so quitting the app
   mid-recording still puts the rest of the system back. It skips desktop event
   sounds and every process sharing this app's executable name (Chromium plays
   our tones from a child process, not the main one).
+- A helper that is *killed* rather than closed cannot restore anything, and
+  both Windows and PulseAudio remember a volume once it is set — so the ducked
+  value would quietly become that application's normal volume, and the next
+  recording would duck it again from there. The originals are therefore written
+  to `duck-state.json` next to the settings file for as long as anything is
+  ducked, and recovered on the next launch before anything else touches the
+  volumes. Two backstops sit behind that: nothing already at or below the duck
+  level is ducked again, and nothing is ever set below 2%.
 - If auto-paste is unavailable, the transcript is still on the clipboard —
   the feature degrades to "paste it yourself" rather than losing text.
 

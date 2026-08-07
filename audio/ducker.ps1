@@ -109,9 +109,18 @@ public class Ducker {
   const int ERender = 0, EConsole = 0, ClsCtxAll = 23, SessionExpired = 2;
   static Guid context = Guid.Empty;
 
-  class Entry {
+  // Nothing is ever turned down below this, whatever the level asks for. If the
+  // originals are ever lost the volumes cannot then be driven to true silence
+  // one recording at a time — the damage is bounded at something still audible.
+  const float MinDucked = 0.02f;
+
+  public class Entry {
     public ISimpleAudioVolume Volume;
     public float Original;
+    // The per-application session id, which unlike the COM pointer survives
+    // this process dying. Windows persists a session's volume against it, so it
+    // is also what makes the volume recoverable after the app itself restarts.
+    public string Id;
   }
 
   // Holding the ISimpleAudioVolume references (rather than re-enumerating and
@@ -120,33 +129,85 @@ public class Ducker {
   // changed shape in between.
   List<Entry> saved = new List<Entry>();
 
-  public int Duck(float level, uint[] skipPids) {
-    Restore();
-    var skip = new HashSet<uint>(skipPids ?? new uint[0]);
+  public List<Entry> Saved { get { return saved; } }
 
+  static string IdOf(IAudioSessionControl2 control) {
+    IntPtr p;
+    if (control.GetSessionIdentifier(out p) != 0 || p == IntPtr.Zero) return null;
+    try { return Marshal.PtrToStringUni(p); }
+    finally { Marshal.FreeCoTaskMem(p); }
+  }
+
+  // Puts back volumes recorded by a *previous* process that never got to
+  // restore them — a crash, a kill, a machine powered off mid-recording. Those
+  // sessions are matched by id rather than by object, because the objects died
+  // with the process that held them.
+  public int RestoreFrom(string[] ids, float[] originals) {
+    if (ids == null || originals == null) return 0;
+    var want = new Dictionary<string, float>();
+    for (int i = 0; i < ids.Length && i < originals.Length; i++) {
+      if (!String.IsNullOrEmpty(ids[i])) want[ids[i]] = originals[i];
+    }
+    if (want.Count == 0) return 0;
+
+    int restored = 0;
+    foreach (var pair in Enumerate()) {
+      var control = pair.Key;
+      var volume = pair.Value;
+      try {
+        string id = IdOf(control);
+        float original;
+        if (id == null || !want.TryGetValue(id, out original)) continue;
+        float current;
+        // Only raise. If the session is already louder than the value we were
+        // going to put back, something has legitimately changed it since and
+        // pulling it back down would be the wrong move.
+        if (volume.GetMasterVolume(out current) == 0 && current >= original) continue;
+        if (volume.SetMasterVolume(original, ref context) == 0) restored++;
+      } catch { }
+    }
+    return restored;
+  }
+
+  // Shared walk of the session list; the two callers differ only in what they
+  // do with each session.
+  List<KeyValuePair<IAudioSessionControl2, ISimpleAudioVolume>> Enumerate() {
+    var found = new List<KeyValuePair<IAudioSessionControl2, ISimpleAudioVolume>>();
     var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
     IMMDevice device;
     if (enumerator.GetDefaultAudioEndpoint(ERender, EConsole, out device) != 0 || device == null)
-      return 0;
+      return found;
 
     Guid iid = typeof(IAudioSessionManager2).GUID;
     object managerObj;
     if (device.Activate(ref iid, ClsCtxAll, IntPtr.Zero, out managerObj) != 0 || managerObj == null)
-      return 0;
+      return found;
 
     IAudioSessionEnumerator sessions;
-    if (((IAudioSessionManager2)managerObj).GetSessionEnumerator(out sessions) != 0)
-      return 0;
+    if (((IAudioSessionManager2)managerObj).GetSessionEnumerator(out sessions) != 0) return found;
 
     int count;
-    if (sessions.GetCount(out count) != 0) return 0;
+    if (sessions.GetCount(out count) != 0) return found;
 
     for (int i = 0; i < count; i++) {
       object sessionObj;
       if (sessions.GetSession(i, out sessionObj) != 0 || sessionObj == null) continue;
       try {
-        var control = (IAudioSessionControl2)sessionObj;
+        found.Add(new KeyValuePair<IAudioSessionControl2, ISimpleAudioVolume>(
+          (IAudioSessionControl2)sessionObj, (ISimpleAudioVolume)sessionObj));
+      } catch { }
+    }
+    return found;
+  }
 
+  public int Duck(float level, uint[] skipPids) {
+    Restore();
+    var skip = new HashSet<uint>(skipPids ?? new uint[0]);
+
+    foreach (var pair in Enumerate()) {
+      var control = pair.Key;
+      var volume = pair.Value;
+      try {
         int state;
         if (control.GetState(out state) == 0 && state == SessionExpired) continue;
         // S_OK means this IS the system sounds session; leave Windows' own
@@ -158,11 +219,28 @@ public class Ducker {
 
         // Inactive sessions are ducked too, so an app that starts playing
         // midway through a recording comes in already quiet.
-        var volume = (ISimpleAudioVolume)sessionObj;
         float current;
         if (volume.GetMasterVolume(out current) != 0) continue;
-        if (volume.SetMasterVolume(current * level, ref context) != 0) continue;
-        saved.Add(new Entry { Volume = volume, Original = current });
+
+        // Compared against the level applied to *full scale* — which is 1.0
+        // here — not to this session's own volume. A session already at or
+        // below where a full-volume one would be put is quiet enough already,
+        // and ducking it again would record the ducked value as its original,
+        // which is how one lost restore turns into silence a recording at a
+        // time.
+        // The epsilon matters: a session sitting at exactly the ducked volume
+        // comes back through the float32 API a hair above it and would
+        // otherwise be ducked a second time.
+        if (current <= level * 1.001f) continue;
+
+        float target = current * level;
+        if (target < MinDucked) target = MinDucked;
+
+        // Recorded before the write, not after. A SetMasterVolume that reports
+        // failure may still have changed something, and a session left out of
+        // `saved` is a session that never gets put back.
+        saved.Add(new Entry { Volume = volume, Original = current, Id = IdOf(control) });
+        volume.SetMasterVolume(target, ref context);
       } catch { }
     }
     return saved.Count;
@@ -186,7 +264,60 @@ public class Ducker {
 }
 
 $ducker = New-Object ScreenPrompt.Ducker
-Emit @{ event = 'status'; state = 'ready' }
+
+# The originals live on disk as well as in memory, because in memory they die
+# with this process. The `finally` below covers a clean stop and a closed stdin,
+# but not a kill, a crash, or the machine being switched off mid-recording — and
+# Windows persists a session's volume, so without this the ducked value silently
+# becomes that application's new normal, and every later recording multiplies it
+# down again.
+$stateDir = Join-Path $env:APPDATA 'Screen Prompt 2'
+$stateFile = Join-Path $stateDir 'duck-state.json'
+
+function Save-State {
+  try {
+    if ($ducker.Saved.Count -eq 0) { Remove-State; return }
+    if (-not (Test-Path $stateDir)) { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null }
+    $rows = @($ducker.Saved | ForEach-Object { @{ id = $_.Id; original = $_.Original } })
+    # -Depth so the hashtables are written out rather than stringified.
+    ConvertTo-Json -InputObject $rows -Depth 3 -Compress | Set-Content -Path $stateFile -Encoding UTF8
+  } catch { }
+}
+
+function Remove-State {
+  try { if (Test-Path $stateFile) { Remove-Item $stateFile -Force } } catch { }
+}
+
+# Recovery runs before anything else touches the volumes, so a duck arriving
+# immediately afterwards reads true originals rather than yesterday's ducked
+# ones. The file is removed either way: a state file that cannot be applied is
+# worse than none, because it would be retried on every launch forever.
+$recovered = 0
+try {
+  if (Test-Path $stateFile) {
+    # Called as a function, not piped. In a pipeline ConvertFrom-Json hands the
+    # whole array down as one object, so `$_.id` inside a ForEach-Object member-
+    # enumerates into an Object[] instead of yielding one row at a time — which
+    # fails at the cast with a message that names neither the file nor the cause.
+    $prev = ConvertFrom-Json -InputObject (Get-Content $stateFile -Raw)
+    $ids = New-Object 'System.Collections.Generic.List[string]'
+    $vals = New-Object 'System.Collections.Generic.List[single]'
+    foreach ($row in $prev) {
+      if ($null -eq $row -or [string]::IsNullOrEmpty([string]$row.id)) { continue }
+      $ids.Add([string]$row.id)
+      $vals.Add([single]$row.original)
+    }
+    if ($ids.Count -gt 0) {
+      $recovered = $ducker.RestoreFrom($ids.ToArray(), $vals.ToArray())
+    }
+  }
+} catch {
+  Emit @{ event = 'error'; detail = "Could not recover volumes: $($_.Exception.Message)" }
+} finally {
+  Remove-State
+}
+
+Emit @{ event = 'status'; state = 'ready'; recovered = $recovered }
 
 try {
   while ($null -ne ($line = [Console]::In.ReadLine())) {
@@ -205,9 +336,13 @@ try {
                     ForEach-Object { [uint32]$_.Id })
         }
         $n = $ducker.Duck([float]$req.level, [uint32[]]$skip)
+        # Written before acknowledging: if this process dies in the next
+        # instant, the file is what puts the volumes back.
+        Save-State
         Emit @{ event = 'ducked'; sessions = $n }
       } elseif ($req.cmd -eq 'restore') {
         $ducker.Restore()
+        Remove-State
         Emit @{ event = 'restored' }
       }
     } catch {
@@ -216,4 +351,5 @@ try {
   }
 } finally {
   try { $ducker.Restore() } catch { }
+  Remove-State
 }

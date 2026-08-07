@@ -24,7 +24,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node tidy-test.js && node shortcut-test.js",
+    "test": "node tidy-test.js && node shortcut-test.js && node scripts/test-python.js",
     "setup": "node scripts/setup.js"
   },
   "dependencies": {

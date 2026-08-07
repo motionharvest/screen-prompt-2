@@ -477,6 +477,13 @@ class Ducker {
         if (msg.event === 'status') {
           this.ready = msg.state === 'ready';
           if (msg.state === 'error') console.error('[duck]', msg.detail);
+          // The helper puts back anything a previous run was killed before
+          // restoring. Worth saying out loud: it means something did go wrong
+          // last time, even though it has just been repaired.
+          if (msg.recovered > 0) {
+            console.log('[duck]', `restored ${msg.recovered} volume(s) that a `
+              + 'previous run was killed before putting back');
+          }
         } else if (msg.event === 'error') {
           console.error('[duck]', msg.detail);
         }
