@@ -48,18 +48,17 @@ const TARGET_RATE = 16000;
 
 // How much of the audio from just *before* the shortcut registered is kept.
 //
-// A lone-modifier shortcut in toggle mode cannot fire on the key press: Right
-// Ctrl is also the Ctrl of Ctrl+C, so the matcher has to wait for the release
-// to know whether it was a clean tap or the start of a combination. That wait
-// is however long you happen to hold the key — around 120 ms in practice — and
-// any word you began saying in that window used to be lost.
+// This was 300 ms when a lone-modifier toggle could only fire on the key
+// release, and had to cover however long the key was held — about 120 ms — plus
+// the gap before that. The shortcut now fires on the press, so all that is left
+// to cover is the hop from the hook through main to this renderer, which is a
+// few milliseconds.
 //
-// Keeping a short rolling buffer while idle solves it without breaking the
-// shortcut: the recording is seeded with what was already heard, so it begins
-// at the press even though the decision arrives at the release. Short on
-// purpose — a longer pre-roll starts dragging in whatever was said before you
-// decided to dictate.
-const PREROLL_MS = 300;
+// Kept rather than removed because that hop is not guaranteed to be fast: under
+// load a scheduling hiccup would otherwise clip the first syllable, and the
+// buffer costs one small array copy. Short on purpose — every millisecond of
+// pre-roll is a millisecond of whatever you said before deciding to dictate.
+const PREROLL_MS = 150;
 const PREROLL_SAMPLES = (TARGET_RATE * PREROLL_MS) / 1000;
 
 let stream = null;
@@ -338,6 +337,17 @@ window.api.onOverlayCmd(async (cmd) => {
       // A keyword supplies its own line; otherwise say where the text went.
       setPill('done', cmd.label || (cmd.pasted ? '✓ Pasted — ' : '✓ Copied — ') + cmd.text);
       playTones('done', cmd.sounds);
+      break;
+
+    // The press turned out to be part of a combination. Unwind everything with
+    // no tone and no message — main hides the window in the same tick, so the
+    // only trace should be that nothing happened at all.
+    case 'abort':
+      wantRecording = false;
+      phase = 'idle';
+      stopAnim();
+      finishRecording();
+      setPill('', '');
       break;
 
     case 'cancel':

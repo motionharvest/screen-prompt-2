@@ -142,17 +142,27 @@ starting a recording is a flag flip. The cost is that your OS shows the
 microphone as in use for as long as the app runs; turn it off to go back to
 opening the device per recording.
 
-**Waiting for the key release: ~120 ms.** A *lone-modifier* shortcut in toggle
-mode cannot fire on the key press — Right Ctrl is also the Ctrl of Ctrl+C, so
-until you let go there is no way to tell a dictation tap from the start of a
-combination. A combination shortcut (`Ctrl+Alt+D`) or a function key does not
-have this problem and already fires on the press.
+**Waiting for the key release: ~120 ms.** Every shortcut now fires on the key
+press. For a combination (`Ctrl+Alt+D`) or a function key that was always true.
+For a *lone modifier* it is a deliberate trade: Right Ctrl is also the Ctrl of
+Ctrl+C, so at the moment it goes down there is genuinely no way to tell a
+dictation tap from the start of a combination.
 
-Rather than break the shortcut, a 300 ms rolling buffer of what the microphone
-already heard is kept while idle, and the recording is seeded with it. The
-recording therefore begins at the *press* even though the decision arrives at
-the release. It is deliberately short: a longer pre-roll starts dragging in
-whatever was said before you decided to dictate.
+Waiting for the release would settle that question, at the cost of the delay
+above on every single dictation. Instead the recording starts immediately and is
+**silently abandoned** if another key arrives while the modifier is still held —
+no tone, no message, the overlay simply never settles. The cost lands on the
+rare case rather than the common one.
+
+What this means in practice: if you press Right Ctrl and then another key, a
+recording briefly started and was thrown away, and you will hear the start tone.
+Use the *left* Ctrl for combinations (which is what most people already do) and
+nothing collides. If you would rather not have the trade at all, hold mode and
+combination shortcuts do not make this bet.
+
+A 150 ms rolling buffer of already-heard audio still seeds each recording, now
+only to absorb the few milliseconds between the hook and the renderer under
+load. `npm test` covers the matcher rules, including the abort.
 
 **The model is not on this path.** The transcriber is a separate process that
 loads Parakeet once at launch and stays resident, so it is already “warm” — it

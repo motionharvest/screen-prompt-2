@@ -157,14 +157,19 @@ function trace(...parts) {
 // lone modifier (right Ctrl is popular for push-to-talk) is a usable shortcut,
 // and Ctrl+C never trips a binding on Ctrl alone.
 class ShortcutMatcher {
-  constructor(onPress, onRelease) {
+  constructor(onPress, onRelease, onAbort) {
     this.onPress = onPress;
     this.onRelease = onRelease;
+    this.onAbort = onAbort;
     this.heldGroups = new Set();   // modifier groups currently down
     this.heldRaw = new Set();      // exact keycodes down
     this.usedMods = new Set();     // modifiers that joined a combination
     this.fired = new Set();        // main keys already fired (key-repeat guard)
     this.enabled = true;
+    // True between a lone-modifier toggle firing on its press and that key
+    // coming back up: the window in which the press might still turn out to
+    // have been the start of a combination.
+    this.speculative = false;
   }
 
   get sc() { return settings.shortcut; }
@@ -174,11 +179,23 @@ class ShortcutMatcher {
   keydown(keycode) {
     const group = MOD_GROUPS.get(keycode);
     if (group !== undefined) {
+      // Captured before the add: a repeated key-down for a key already held
+      // would otherwise toggle the recording off and straight back on. This
+      // mattered much less when toggle fired on the release, which can only
+      // happen once per press.
+      const alreadyDown = this.heldRaw.has(keycode);
       this.heldGroups.add(group);
       this.heldRaw.add(keycode);
-      // A lone-modifier shortcut in hold mode starts on the press itself.
-      if (this.enabled && this.sc.isModifier && settings.mode === 'hold'
+      // A lone-modifier shortcut fires on the press in both modes. Waiting for
+      // the release would be the safe reading — the key is also a modifier, so
+      // until it comes up this could still be the Ctrl of Ctrl+C — but that
+      // wait is however long you happen to hold the key, and it is the delay
+      // you feel before the pill appears. Firing now and undoing it below if a
+      // combination materialises puts the cost on the rare case instead of
+      // every single dictation.
+      if (!alreadyDown && this.enabled && this.sc.isModifier
           && keycode === this.sc.keycode && this.othersHeld(group).size === 0) {
+        if (settings.mode === 'toggle') this.speculative = true;
         this.onPress();
       }
       return;
@@ -187,6 +204,14 @@ class ShortcutMatcher {
     // A real key: every modifier now down is part of a combination and must
     // not fire as a lone shortcut when released.
     for (const raw of this.heldRaw) this.usedMods.add(raw);
+
+    // ...and if the shortcut modifier is one of them, the recording started on
+    // its press was never wanted. Undo it before this keystroke is even done.
+    if (this.speculative && this.heldRaw.has(this.sc.keycode)) {
+      this.speculative = false;
+      trace('matcher.abort', 'combination on the shortcut modifier');
+      this.onAbort();
+    }
 
     if (!this.enabled || this.sc.isModifier) return;
     if (this.fired.has(keycode)) return; // key repeat
@@ -226,11 +251,10 @@ class ShortcutMatcher {
       this.onRelease();
       return;
     }
-    // Toggle on a lone modifier: fire on release, and only if it was a clean
-    // tap — no other key pressed while it was down.
-    const wasUsed = this.usedMods.delete(keycode);
-    if (!wasUsed && this.othersHeld(group).size === 0) this.onPress();
-    else trace('matcher.keyup SUPPRESSED', 'wasUsed=' + wasUsed);
+    // Toggle already fired on the press, and any combination that press turned
+    // out to belong to has already been undone. The release only clears state.
+    this.usedMods.delete(keycode);
+    this.speculative = false;
   }
 
   groupsMatch() {
@@ -956,6 +980,26 @@ function onShortcutRelease() {
   if (settings.mode === 'hold') stopRecording();
 }
 
+// The shortcut modifier turned out to be part of a combination, so the
+// recording started on its press was never wanted. Dropped without a sound and
+// without a message: this fires during ordinary typing, and a cancel tone every
+// time you pressed Right Ctrl + C would be far worse than the wait it replaced.
+//
+// Only a recording is undone. If the press was the second tap of a toggle the
+// state is already 'processing' — the audio is on its way to the model and
+// stopping that would lose what you actually said.
+function onShortcutAbort() {
+  trace('onShortcutAbort', 'state=' + appState);
+  if (appState !== 'recording') return;
+  stopFollowingCursor();
+  ducker.restore();
+  appState = 'idle';
+  clearTimeout(hideTimer);
+  overlayCmd({ cmd: 'abort' });
+  if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide();
+  broadcastState();
+}
+
 let hideTimer = null;
 function finishOverlay(payload, delay) {
   overlayCmd(payload);
@@ -1052,7 +1096,7 @@ function waitForKeysReleased(timeoutMs) {
 
 // --------------------------------------------------------------------- IPC --
 
-const matcher = new ShortcutMatcher(onShortcutPress, onShortcutRelease);
+const matcher = new ShortcutMatcher(onShortcutPress, onShortcutRelease, onShortcutAbort);
 const capture = new ShortcutCapture((event) => {
   matcher.enabled = !capture.active;
   if (settingsWin && !settingsWin.isDestroyed()) {
