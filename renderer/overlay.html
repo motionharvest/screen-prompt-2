@@ -54,7 +54,15 @@
       justify-content: center; gap: 6px; padding: 12px 20px;
       transition: border-color 0.25s ease, background 0.25s ease;
     }
-    #pill.recording { border-color: var(--border-recording); }
+    /* No transition on the way *into* recording. The pill is the confirmation
+       that the shortcut registered, so it has to be fully there the moment it
+       appears rather than easing up over a quarter second — by which time you
+       have already started talking. The result states keep the ease: nothing is
+       waiting on them, and they read better arriving gently. */
+    #pill.recording {
+      border-color: var(--border-recording);
+      transition: none;
+    }
     #pill.done      { border-color: var(--border-done); }
     #pill.error     { border-color: var(--border-error); }
     canvas { width: 296px; height: 44px; }
