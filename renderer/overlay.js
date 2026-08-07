@@ -46,68 +46,132 @@ function playTones(name, enabled) {
 
 const TARGET_RATE = 16000;
 
+// How much of the audio from just *before* the shortcut registered is kept.
+//
+// A lone-modifier shortcut in toggle mode cannot fire on the key press: Right
+// Ctrl is also the Ctrl of Ctrl+C, so the matcher has to wait for the release
+// to know whether it was a clean tap or the start of a combination. That wait
+// is however long you happen to hold the key — around 120 ms in practice — and
+// any word you began saying in that window used to be lost.
+//
+// Keeping a short rolling buffer while idle solves it without breaking the
+// shortcut: the recording is seeded with what was already heard, so it begins
+// at the press even though the decision arrives at the release. Short on
+// purpose — a longer pre-roll starts dragging in whatever was said before you
+// decided to dictate.
+const PREROLL_MS = 300;
+const PREROLL_SAMPLES = (TARGET_RATE * PREROLL_MS) / 1000;
+
 let stream = null;
 let audioCtx = null;
 let analyser = null;
 let workletNode = null;
-let chunks = [];        // Float32Array pieces at 16 kHz
+let chunks = [];        // Float32Array pieces at 16 kHz, this recording
 let sampleCount = 0;
 let recording = false;
 let wantRecording = false;
+let warm = false;       // keep the device open between recordings
+let opening = null;     // in-flight ensureCapture(), so two starts share one
+let preroll = [];       // rolling pre-PREROLL_MS audio, only while warm + idle
+let prerollCount = 0;
 
-async function startCapture() {
-  chunks = [];
-  sampleCount = 0;
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: true,
-    },
-  });
-  // A fast toggle can stop the recording while getUserMedia is still opening
-  // the device; without this check the stream would leak and the mic stay hot.
-  if (!wantRecording) {
-    for (const t of stream.getTracks()) t.stop();
-    stream = null;
-    return;
+// Opening the microphone is the whole delay. getUserMedia negotiates with the
+// OS, the AudioContext opens a device at 16 kHz, and addModule fetches and
+// compiles the worklet — together a few hundred milliseconds, all of it after
+// the pill already said "Listening…". Doing it once and leaving it open is why
+// the warm setting exists; this function is idempotent so either path can call
+// it without caring which.
+async function ensureCapture() {
+  if (workletNode) return;
+  if (opening) return opening;
+
+  opening = (async () => {
+    const media = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: true,
+      },
+    });
+    stream = media;
+    // Unplugging the mic ends the track. Tearing down here means the next
+    // recording re-acquires rather than capturing silence from a dead device.
+    for (const t of media.getTracks()) {
+      t.addEventListener('ended', () => { if (!recording) teardownCapture(); });
+    }
+
+    // Asking the context for 16 kHz makes Chromium do the resampling; the model
+    // gets its native rate without any DSP of our own.
+    audioCtx = new AudioContext({ sampleRate: TARGET_RATE });
+    const source = audioCtx.createMediaStreamSource(media);
+
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.75;
+    source.connect(analyser);
+
+    await audioCtx.audioWorklet.addModule('capture-worklet.js');
+    const node = new AudioWorkletNode(audioCtx, 'capture', {
+      numberOfInputs: 1, numberOfOutputs: 0,
+    });
+    node.port.onmessage = (e) => {
+      if (recording) {
+        chunks.push(e.data);
+        sampleCount += e.data.length;
+        return;
+      }
+      if (!warm) return;
+      preroll.push(e.data);
+      prerollCount += e.data.length;
+      // Drop from the front only while the whole oldest piece is surplus, so
+      // the buffer stays at least PREROLL_SAMPLES rather than dipping under it.
+      while (preroll.length && prerollCount - preroll[0].length >= PREROLL_SAMPLES) {
+        prerollCount -= preroll.shift().length;
+      }
+    };
+    source.connect(node);
+    workletNode = node;
+  })();
+
+  try {
+    await opening;
+  } catch (err) {
+    teardownCapture();
+    throw err;
+  } finally {
+    opening = null;
   }
-  // Asking the context for 16 kHz makes Chromium do the resampling; the model
-  // gets its native rate without any DSP of our own.
-  audioCtx = new AudioContext({ sampleRate: TARGET_RATE });
-  const source = audioCtx.createMediaStreamSource(stream);
+}
 
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 256;
-  analyser.smoothingTimeConstant = 0.75;
-  source.connect(analyser);
-
-  await audioCtx.audioWorklet.addModule('capture-worklet.js');
-  workletNode = new AudioWorkletNode(audioCtx, 'capture', {
-    numberOfInputs: 1, numberOfOutputs: 0,
-  });
-  workletNode.port.onmessage = (e) => {
-    if (!recording) return;
-    chunks.push(e.data);
-    sampleCount += e.data.length;
-  };
-  source.connect(workletNode);
+// Flag flip plus a memcpy of the pre-roll — nothing that can block, which is
+// the point: by the time the pill is painted, capture is already live.
+function beginRecording() {
+  chunks = warm ? preroll : [];
+  sampleCount = warm ? prerollCount : 0;
+  preroll = [];
+  prerollCount = 0;
   recording = true;
 }
 
-function stopCapture() {
+function finishRecording() {
   recording = false;
-  if (workletNode) { try { workletNode.disconnect(); } catch { } workletNode = null; }
-  if (stream) { for (const t of stream.getTracks()) t.stop(); stream = null; }
-  if (audioCtx) { audioCtx.close(); audioCtx = null; }
-  analyser = null;
-
   const total = new Float32Array(sampleCount);
   let off = 0;
   for (const c of chunks) { total.set(c, off); off += c.length; }
   chunks = [];
+  sampleCount = 0;
+  if (!warm) teardownCapture();
   return total;
+}
+
+function teardownCapture() {
+  if (workletNode) { try { workletNode.disconnect(); } catch { } workletNode = null; }
+  if (stream) { for (const t of stream.getTracks()) t.stop(); stream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  analyser = null;
+  preroll = [];
+  prerollCount = 0;
 }
 
 function encodeWav(samples, rate) {
@@ -208,10 +272,25 @@ function setPill(cls, text) {
 
 window.api.onOverlayCmd(async (cmd) => {
   applyTheme(cmd.theme);
+  // Every command carries the setting, so the overlay cannot drift out of step
+  // with it — the same reason `theme` rides along on all of them.
+  const wasWarm = warm;
+  warm = Boolean(cmd.warm);
+  if (wasWarm && !warm && !recording) teardownCapture();
+
   switch (cmd.cmd) {
     // 'theme' carries nothing else — it exists so changing the scheme in
     // settings repaints an overlay that is already on screen.
     case 'theme':
+      break;
+
+    // Sent at launch and whenever the setting is toggled on. Opening the device
+    // now is the whole point: it moves the cost off the path between pressing
+    // the shortcut and capturing the first sample.
+    case 'warm':
+      if (warm && !recording) {
+        try { await ensureCapture(); } catch { /* reported on first use */ }
+      }
       break;
 
     case 'start':
@@ -221,7 +300,17 @@ window.api.onOverlayCmd(async (cmd) => {
       startAnim();
       playTones('start', cmd.sounds);
       try {
-        await startCapture();
+        // Warm, this returns without awaiting anything real and capture is live
+        // in this same tick. Cold, the device opens here — the delay the warm
+        // setting exists to remove.
+        await ensureCapture();
+        // A fast toggle can stop the recording while the device is still
+        // opening; without this the stream would leak and the mic stay hot.
+        if (!wantRecording) {
+          if (!warm) teardownCapture();
+          break;
+        }
+        beginRecording();
       } catch (err) {
         // Main answers with an error cmd, which shows the message and plays
         // the error tone; nothing to display from here.
@@ -234,7 +323,7 @@ window.api.onOverlayCmd(async (cmd) => {
     case 'stop': {
       wantRecording = false;
       playTones('stop', cmd.sounds);
-      const samples = stopCapture();
+      const samples = finishRecording();
       const duration = samples.length / TARGET_RATE;
       phase = 'processing';
       setPill('', 'Transcribing…');

@@ -30,6 +30,11 @@ const DEFAULT_SETTINGS = {
   theme: 'default',          // overlay colour scheme: 'default' | 'synthwave'
   duck: false,               // quieten other apps while recording
   duckLevel: 0.25,           // ...to this fraction of their own volume
+  // Hold the microphone open between recordings. Opening it is a few hundred
+  // milliseconds, and it all lands after the overlay says "Listening…", so this
+  // is the difference between the first word being captured and being lost.
+  // The cost is that the OS shows the mic as in use whenever the app is running.
+  keepMicWarm: true,
   launchAtStartup: false,
   model: 'nemo-parakeet-tdt-0.6b-v2',
   quantization: 'int8',      // '' for full precision (bigger download, slower CPU)
@@ -536,6 +541,11 @@ function createOverlayWindow() {
   overlayWin.setAlwaysOnTop(true, 'screen-saver');
   // macOS needs one more call to stay visible over a fullscreen app.
   platform.tuneOverlay?.(overlayWin);
+  // Open the microphone as soon as the renderer exists, so the very first
+  // recording after launch is as fast as every one after it.
+  overlayWin.webContents.once('did-finish-load', () => {
+    if (settings.keepMicWarm) overlayCmd({ cmd: 'warm' });
+  });
   overlayWin.loadFile(path.join(__dirname, 'renderer', 'overlay.html'));
 }
 
@@ -584,7 +594,8 @@ function stopFollowingCursor() {
 // right colours by the time it is shown — no separate load-time handshake.
 function overlayCmd(payload) {
   if (overlayWin && !overlayWin.isDestroyed()) {
-    overlayWin.webContents.send('overlay:cmd', { theme: settings.theme, ...payload });
+    overlayWin.webContents.send('overlay:cmd',
+      { theme: settings.theme, warm: settings.keepMicWarm, ...payload });
   }
 }
 
@@ -1056,6 +1067,7 @@ ipcMain.handle('settings:get', () => ({
     launchAtStartup: launchAtStartupEnabled(), model: settings.model,
     theme: settings.theme, duck: settings.duck, duckLevel: settings.duckLevel,
     tidy: settings.tidy, keywords: settings.keywords,
+    keepMicWarm: settings.keepMicWarm,
   },
   pretty: prettyShortcut(settings.shortcut),
   appState,
@@ -1095,6 +1107,12 @@ ipcMain.handle('settings:set', (_e, partial) => {
   if (partial.launchAtStartup !== undefined) {
     settings.launchAtStartup = partial.launchAtStartup;
     applyLaunchAtStartup(partial.launchAtStartup);
+  }
+  if (partial.keepMicWarm !== undefined) {
+    settings.keepMicWarm = partial.keepMicWarm;
+    // Opens the device now on enable; on disable the overlay sees the flag on
+    // this same command and closes it.
+    overlayCmd({ cmd: 'warm' });
   }
   if (Array.isArray(partial.keywords)) {
     // Half-filled rows are kept rather than dropped — you are probably still

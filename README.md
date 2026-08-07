@@ -19,6 +19,10 @@ no figures — just voice to text.
   (`Ctrl+Alt+D`), function keys, or a lone modifier like right&nbsp;Ctrl.
 - **Toggle or hold** — press to start / press to stop, or record only while
   the key is held (push-to-talk).
+- **Starts listening instantly** — the microphone is held open between
+  recordings (a toggle, on by default), so the shortcut begins capturing in the
+  same frame instead of waiting ~230 ms for an audio device to open. See
+  [Latency](#latency).
 - **Paste or copy** — when transcription finishes the text is copied to the
   clipboard, and can optionally be pasted straight into the active app.
 - **Overlay** — a small always-on-top pill with a live audio spectrum while
@@ -106,6 +110,38 @@ own original volume.
 client from reading another's keystrokes, so the hook only sees keys pressed in
 XWayland windows. This is Wayland working as designed, not a bug here; an X11
 session gets a shortcut that works everywhere.
+
+## Latency
+
+Two things used to sit between pressing the shortcut and the first sample being
+recorded. Neither was a deliberate delay, and there is no fade-in or animation
+gating capture — the overlay's only transition is on its border colour.
+
+**Opening the microphone: ~230 ms, measured.** `getUserMedia` negotiates with
+the OS, the `AudioContext` opens a device at 16 kHz, and the capture worklet is
+fetched and compiled. All of it ran *after* the pill already said “Listening…”,
+so the first word was routinely lost. **Keep the microphone ready** (Recording
+settings, on by default) does this once at launch and leaves the device open, so
+starting a recording is a flag flip. The cost is that your OS shows the
+microphone as in use for as long as the app runs; turn it off to go back to
+opening the device per recording.
+
+**Waiting for the key release: ~120 ms.** A *lone-modifier* shortcut in toggle
+mode cannot fire on the key press — Right Ctrl is also the Ctrl of Ctrl+C, so
+until you let go there is no way to tell a dictation tap from the start of a
+combination. A combination shortcut (`Ctrl+Alt+D`) or a function key does not
+have this problem and already fires on the press.
+
+Rather than break the shortcut, a 300 ms rolling buffer of what the microphone
+already heard is kept while idle, and the recording is seeded with it. The
+recording therefore begins at the *press* even though the decision arrives at
+the release. It is deliberately short: a longer pre-roll starts dragging in
+whatever was said before you decided to dictate.
+
+**The model is not on this path.** The transcriber is a separate process that
+loads Parakeet once at launch and stays resident, so it is already “warm” — it
+only affects how long the text takes to come back *after* you stop talking, not
+how quickly recording starts.
 
 ## Architecture
 

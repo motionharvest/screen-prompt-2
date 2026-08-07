@@ -168,6 +168,7 @@ async function init() {
   $('sounds').checked = state.settings.sounds;
   $('startup').checked = state.settings.launchAtStartup;
   $('tidy').checked = state.settings.tidy;
+  $('keep-mic-warm').checked = state.settings.keepMicWarm;
   keywords = (state.settings.keywords || []).map((k) => ({ ...k }));
   renderKeywords();
   $('duck').checked = state.settings.duck;
@@ -185,6 +186,7 @@ for (const input of document.querySelectorAll('input[name="theme"]')) {
   input.addEventListener('change', () => window.api.setSettings({ theme: input.value }));
 }
 $('tidy').addEventListener('change', (e) => window.api.setSettings({ tidy: e.target.checked }));
+$('keep-mic-warm').addEventListener('change', (e) => window.api.setSettings({ keepMicWarm: e.target.checked }));
 $('duck').addEventListener('change', (e) => {
   showDuck(e.target.checked, Number($('duck-level').value));
   window.api.setSettings({ duck: e.target.checked });
