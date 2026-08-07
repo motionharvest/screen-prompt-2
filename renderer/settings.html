@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Screen Prompt 2</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #14161b; color: #e6e2da;
+      font-family: "Segoe UI", system-ui, sans-serif; font-size: 14px;
+      padding: 22px 24px; -webkit-user-select: none;
+    }
+    h1 { font-size: 17px; font-weight: 600; letter-spacing: 0.01em; }
+    .sub { color: #8b8fa0; font-size: 12px; margin-top: 2px; }
+
+    .card {
+      background: #1b1e26; border: 1px solid #262a35; border-radius: 12px;
+      padding: 14px 16px; margin-top: 14px;
+    }
+    .card h2 {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #8b8fa0; margin-bottom: 10px;
+    }
+
+    #status-row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    #status-dot {
+      width: 10px; height: 10px; border-radius: 50%; background: #e2b93b;
+      flex-shrink: 0; transition: background 0.3s;
+    }
+    #status-dot.ready { background: #5ec884; }
+    #status-dot.error { background: #e25c5c; }
+    #status-dot.recording { background: #e8744c; box-shadow: 0 0 8px #e8744c; }
+    #status-text { font-size: 13px; color: #b9bdcb; }
+
+    #progress-wrap { display: none; margin-top: 10px; }
+    #progress-track {
+      height: 6px; border-radius: 3px; background: #262a35; overflow: hidden;
+    }
+    #progress-fill {
+      height: 100%; width: 0%; border-radius: 3px;
+      background: linear-gradient(90deg, #d8825a, #f0a878);
+      transition: width 0.35s linear;
+    }
+    #progress-label {
+      display: flex; justify-content: space-between;
+      font-size: 11.5px; color: #8b8fa0; margin-top: 5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .shortcut-row { display: flex; align-items: center; gap: 12px; }
+    #shortcut-display {
+      flex: 1; background: #12141a; border: 1px solid #2c3140; border-radius: 8px;
+      padding: 9px 12px; font-size: 15px; font-weight: 600; letter-spacing: 0.03em;
+      color: #f0a878; min-height: 38px; display: flex; align-items: center;
+    }
+    #shortcut-display.capturing { border-color: #e8744c; color: #b9bdcb; font-weight: 400; }
+    button {
+      background: #2c3140; color: #e6e2da; border: none; border-radius: 8px;
+      padding: 9px 16px; font-size: 13px; font-family: inherit; cursor: pointer;
+    }
+    button:hover { background: #363c4e; }
+    #capture-error { color: #ef9a9a; font-size: 12px; margin-top: 8px; display: none; }
+
+    .choice { display: flex; gap: 8px; }
+    .choice label {
+      flex: 1; background: #12141a; border: 1px solid #2c3140; border-radius: 8px;
+      padding: 10px 12px; cursor: pointer; transition: border-color 0.15s;
+    }
+    .choice label:has(input:checked) { border-color: #d8825a; background: #211d1c; }
+    .choice input { display: none; }
+    .choice .t { font-weight: 600; font-size: 13px; }
+    .choice .d { color: #8b8fa0; font-size: 11.5px; margin-top: 3px; }
+
+    .hint { color: #8b8fa0; font-size: 11.5px; margin-bottom: 10px; line-height: 1.45; }
+    .hint code { color: #f0a878; font-family: Consolas, monospace; }
+
+    .kw {
+      background: #12141a; border: 1px solid #2c3140; border-radius: 8px;
+      padding: 10px; margin-bottom: 8px;
+    }
+    .kw-top { display: flex; gap: 8px; align-items: center; }
+    .kw input[type="text"], .kw select {
+      background: #0e1015; border: 1px solid #2c3140; border-radius: 6px;
+      color: #e6e2da; font-family: inherit; font-size: 12.5px; padding: 7px 9px;
+      min-width: 0;
+    }
+    .kw input:focus, .kw select:focus { outline: none; border-color: #d8825a; }
+    .kw-word { width: 116px; flex-shrink: 0; }
+    .kw-type { flex: 1; cursor: pointer; }
+    .kw-target { width: 100%; margin-top: 8px; }
+    .kw-del {
+      background: none; border: none; color: #565b6b; cursor: pointer;
+      padding: 2px 6px; font-size: 17px; line-height: 1; flex-shrink: 0;
+    }
+    .kw-del:hover { background: none; color: #ef9a9a; }
+    #keyword-add { font-size: 12.5px; padding: 7px 12px; }
+    #keyword-empty { color: #565b6b; font-size: 12px; margin-bottom: 10px; }
+
+    .swatch { display: flex; gap: 4px; margin-top: 8px; }
+    .swatch i {
+      width: 15px; height: 15px; border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .slider-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+    .slider-row .t { font-size: 13px; white-space: nowrap; }
+    input[type="range"] {
+      flex: 1; appearance: none; height: 4px; border-radius: 2px;
+      background: #2c3140; cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      appearance: none; width: 14px; height: 14px; border-radius: 50%;
+      background: #d8825a; cursor: pointer;
+    }
+    input[type="range"]:disabled { opacity: 0.4; cursor: default; }
+    input[type="range"]:disabled::-webkit-slider-thumb { cursor: default; }
+    #duck-value {
+      font-size: 13px; color: #f0a878; width: 40px; text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    #duck-row.off #duck-value { color: #565b6b; }
+
+    .switch-row { display: flex; align-items: center; justify-content: space-between; }
+    .switch-row .t { font-size: 13px; }
+    input[type="checkbox"].switch {
+      appearance: none; width: 38px; height: 22px; border-radius: 11px;
+      background: #2c3140; position: relative; cursor: pointer; transition: background 0.15s;
+    }
+    input[type="checkbox"].switch:checked { background: #d8825a; }
+    input[type="checkbox"].switch::after {
+      content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+      border-radius: 50%; background: #e6e2da; transition: left 0.15s;
+    }
+    input[type="checkbox"].switch:checked::after { left: 19px; }
+
+    #last-text {
+      width: 100%; height: 84px; background: #12141a; border: 1px solid #2c3140;
+      border-radius: 8px; color: #b9bdcb; font-family: inherit; font-size: 12.5px;
+      padding: 8px 10px; resize: none; -webkit-user-select: text;
+      cursor: pointer; transition: border-color 0.15s;
+    }
+    #last-text:hover { border-color: #3a4152; }
+    #copy-note {
+      color: #5ec884; margin-left: 8px; opacity: 0; transition: opacity 0.2s;
+    }
+    #copy-note.show { opacity: 1; }
+    .footer { color: #565b6b; font-size: 11.5px; margin-top: 14px; text-align: center; }
+    .warn {
+      background: #2a2118; border: 1px solid #5c4426; border-radius: 8px;
+      color: #e2b877; font-size: 11.5px; line-height: 1.5;
+      padding: 10px 12px; margin-bottom: 12px;
+    }
+    .warn button {
+      background: #5c4426; border: 0; border-radius: 5px; color: #f0d5a8;
+      cursor: pointer; font-size: 11.5px; margin-top: 8px; padding: 5px 10px;
+    }
+    .warn button:hover { background: #6e5330; }
+  </style>
+</head>
+<body>
+  <h1>Screen Prompt 2</h1>
+  <div class="sub">Dictate anywhere — local Parakeet v2, nothing leaves your machine.</div>
+
+  <div id="status-row">
+    <div id="status-dot"></div>
+    <div id="status-text">Starting…</div>
+  </div>
+  <div id="progress-wrap">
+    <div id="progress-track"><div id="progress-fill"></div></div>
+    <div id="progress-label"><span id="progress-pct"></span><span id="progress-speed"></span></div>
+  </div>
+
+  <!-- Anything this machine is missing — Accessibility permission on macOS, a
+       paste helper or pactl on Linux. Hidden entirely when there is nothing to
+       say, which is every Windows install and most others. -->
+  <div id="platform-warnings" style="display:none;"></div>
+
+  <div class="card">
+    <h2>Shortcut</h2>
+    <div class="shortcut-row">
+      <div id="shortcut-display">…</div>
+      <button id="change-btn">Change</button>
+    </div>
+    <div id="capture-error"></div>
+  </div>
+
+  <div class="card">
+    <h2>Recording</h2>
+    <div class="choice">
+      <label><input type="radio" name="mode" value="toggle">
+        <div class="t">Toggle</div>
+        <div class="d">Press to start, press again to stop</div>
+      </label>
+      <label><input type="radio" name="mode" value="hold">
+        <div class="t">Hold</div>
+        <div class="d">Record while the key is held down</div>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>When transcription finishes</h2>
+    <div class="choice">
+      <label><input type="radio" name="output" value="paste">
+        <div class="t">Paste</div>
+        <div class="d">Copy, then paste into the active app</div>
+      </label>
+      <label><input type="radio" name="output" value="clipboard">
+        <div class="t">Copy only</div>
+        <div class="d">Leave the text on the clipboard</div>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="switch-row">
+      <div>
+        <div class="t">Tidy up the transcript</div>
+        <div class="d" style="color:#8b8fa0; font-size:11.5px; margin-top:2px;">
+          Drops “um” and “uh”, collapses stutters and repeated words
+        </div>
+      </div>
+      <input type="checkbox" class="switch" id="tidy">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Keywords</h2>
+    <div class="hint">
+      Say the keyword first and the rest becomes the query — “Google, what is
+      the capital of Indiana”. <code>%s</code> marks where the query goes; with
+      no <code>%s</code> a URL just gets it appended. Commands run without a
+      shell, so the query stays one argument no matter what is in it.
+    </div>
+    <div id="keyword-list"></div>
+    <div id="keyword-empty">No keywords — everything you say is transcribed.</div>
+    <button id="keyword-add">Add keyword</button>
+  </div>
+
+  <div class="card">
+    <h2>Overlay colours</h2>
+    <div class="choice">
+      <label><input type="radio" name="theme" value="default">
+        <div class="t">Default</div>
+        <div class="d">Warm amber on near-black</div>
+        <div class="swatch">
+          <i style="background:#f0a878"></i><i style="background:#d8825a"></i><i style="background:#12141a"></i>
+        </div>
+      </label>
+      <label><input type="radio" name="theme" value="synthwave">
+        <div class="t">Synthwave</div>
+        <div class="d">Neon blue and pink on deep purple</div>
+        <div class="swatch">
+          <i style="background:#22e0ff"></i><i style="background:#ff2e97"></i><i style="background:#1a0a2e"></i>
+        </div>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="switch-row">
+      <div>
+        <div class="t">Duck other audio while recording</div>
+        <div class="d" style="color:#8b8fa0; font-size:11.5px; margin-top:2px;">
+          Turns other apps down so the mic hears you, not your speakers
+        </div>
+        <!-- Filled in per platform: macOS can only duck the whole output, and
+             Linux needs pactl present. -->
+        <div id="duck-note" style="color:#8b8fa0; font-size:11.5px; margin-top:4px;
+             font-style:italic; display:none;"></div>
+      </div>
+      <input type="checkbox" class="switch" id="duck">
+    </div>
+    <div class="slider-row" id="duck-row">
+      <div class="t">Reduce by</div>
+      <input type="range" id="duck-level" min="10" max="100" step="5">
+      <div id="duck-value">75%</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="switch-row">
+      <div class="t">Sounds (start, stop, confirmation)</div>
+      <input type="checkbox" class="switch" id="sounds">
+    </div>
+    <div class="switch-row" style="margin-top: 12px;">
+      <div>
+        <div class="t" id="startup-label">Start at login</div>
+        <div class="d" style="color:#8b8fa0; font-size:11.5px; margin-top:2px;">
+          Launches straight to the tray
+        </div>
+      </div>
+      <input type="checkbox" class="switch" id="startup">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Last transcription <span id="copy-note">copied</span></h2>
+    <textarea id="last-text" readonly title="Click to copy"
+      placeholder="Nothing yet — press the shortcut and talk."></textarea>
+  </div>
+
+  <div class="footer">Closing this window keeps Screen Prompt 2 running in the tray.</div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: transparent; overflow: hidden; height: 100%; }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      -webkit-user-select: none;
+    }
+
+    /* Colour schemes. The spectrum is a canvas, so overlay.js reads the --bar-*
+       values back out of the computed style rather than keeping its own copy —
+       one definition per scheme, whichever way a colour ends up being painted. */
+    body {
+      --pill-bg: rgba(18, 20, 26, 0.92);
+      --pill-border: rgba(255, 255, 255, 0.10);
+      --pill-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      --border-recording: rgba(232, 116, 76, 0.55);
+      --border-done: rgba(94, 200, 132, 0.6);
+      --border-error: rgba(226, 92, 92, 0.6);
+      --label: rgba(255, 255, 255, 0.72);
+      --label-done: #7fdca4;
+      --label-error: #ef9a9a;
+      --bar-top: #f0a878;
+      --bar-bottom: #d8825a;
+      --bar-processing: rgba(216, 130, 90, 0.55);
+      --bar-glow: none;
+    }
+    body[data-theme="synthwave"] {
+      --pill-bg: rgba(37, 13, 66, 0.95);
+      --pill-border: rgba(157, 78, 221, 0.38);
+      --pill-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 26px rgba(255, 46, 151, 0.20);
+      --border-recording: rgba(255, 46, 151, 0.75);
+      --border-done: rgba(0, 245, 212, 0.7);
+      --border-error: rgba(255, 56, 100, 0.75);
+      --label: rgba(233, 216, 255, 0.85);
+      --label-done: #5ff5e0;
+      --label-error: #ff6b8a;
+      --bar-top: #22e0ff;
+      --bar-bottom: #ff2e97;
+      --bar-processing: rgba(157, 78, 221, 0.62);
+      --bar-glow: rgba(255, 46, 151, 0.55);
+    }
+
+    #pill {
+      width: 336px; height: 96px; border-radius: 20px;
+      background: var(--pill-bg);
+      border: 1px solid var(--pill-border);
+      box-shadow: var(--pill-shadow);
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 6px; padding: 12px 20px;
+      transition: border-color 0.25s ease, background 0.25s ease;
+    }
+    #pill.recording { border-color: var(--border-recording); }
+    #pill.done      { border-color: var(--border-done); }
+    #pill.error     { border-color: var(--border-error); }
+    canvas { width: 296px; height: 44px; }
+    #label {
+      font-size: 12px; letter-spacing: 0.04em; color: var(--label);
+      max-width: 296px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #pill.done #label { color: var(--label-done); }
+    #pill.error #label { color: var(--label-error); }
+  </style>
+</head>
+<body>
+  <div id="pill">
+    <canvas id="spectrum" width="592" height="88"></canvas>
+    <div id="label">Listening…</div>
+  </div>
+  <script src="overlay.js"></script>
+</body>
+</html>

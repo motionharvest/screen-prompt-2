@@ -1,0 +1,14 @@
+# Shell scripts must arrive with LF endings whatever the cloner's core.autocrlf
+# is set to: a `#!/usr/bin/env bash` line ending in CRLF fails on Linux and
+# macOS with "bad interpreter: ...^M", which is a confusing way to learn that
+# the checkout is the problem rather than the script.
+* text=auto eol=lf
+
+# ...and these two are the opposite case — Windows-only, and PowerShell and
+# cscript both prefer the endings the rest of the platform uses.
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.ico binary
