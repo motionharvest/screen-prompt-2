@@ -169,6 +169,8 @@ async function init() {
   $('startup').checked = state.settings.launchAtStartup;
   $('tidy').checked = state.settings.tidy;
   $('keep-mic-warm').checked = state.settings.keepMicWarm;
+  $('restore-clipboard').checked = state.settings.restoreClipboard;
+  showRestoreClipboard(state.settings.output);
   keywords = (state.settings.keywords || []).map((k) => ({ ...k }));
   renderKeywords();
   $('duck').checked = state.settings.duck;
@@ -179,14 +181,26 @@ async function init() {
 for (const input of document.querySelectorAll('input[name="mode"]')) {
   input.addEventListener('change', () => window.api.setSettings({ mode: input.value }));
 }
+// Restoring the clipboard is a paste-mode idea: copy-only leaves the text
+// there on purpose, and type mode never touches it at all.
+function showRestoreClipboard(output) {
+  const on = output === 'paste';
+  $('restore-clipboard').disabled = !on;
+  $('restore-clipboard-row').classList.toggle('off', !on);
+}
+
 for (const input of document.querySelectorAll('input[name="output"]')) {
-  input.addEventListener('change', () => window.api.setSettings({ output: input.value }));
+  input.addEventListener('change', () => {
+    showRestoreClipboard(input.value);
+    window.api.setSettings({ output: input.value });
+  });
 }
 for (const input of document.querySelectorAll('input[name="theme"]')) {
   input.addEventListener('change', () => window.api.setSettings({ theme: input.value }));
 }
 $('tidy').addEventListener('change', (e) => window.api.setSettings({ tidy: e.target.checked }));
 $('keep-mic-warm').addEventListener('change', (e) => window.api.setSettings({ keepMicWarm: e.target.checked }));
+$('restore-clipboard').addEventListener('change', (e) => window.api.setSettings({ restoreClipboard: e.target.checked }));
 $('duck').addEventListener('change', (e) => {
   showDuck(e.target.checked, Number($('duck-level').value));
   window.api.setSettings({ duck: e.target.checked });

@@ -36,29 +36,51 @@ function onPath(name) {
   return false;
 }
 
-// Each entry is a way to type Ctrl+V into whatever has focus.
-const PASTE_TOOLS = [
+// Each entry is a way to reach the focused window: `paste` sends Ctrl+V,
+// `type` enters the text itself. Every one of these takes the text as a single
+// bound argument, so nothing in a transcript is ever parsed as shell.
+const INPUT_TOOLS = [
   // Wayland's virtual-keyboard protocol. -M holds a modifier, -m releases it.
-  { bin: 'wtype', args: ['-M', 'ctrl', 'v', '-m', 'ctrl'], wayland: true, x11: false },
+  {
+    bin: 'wtype',
+    wayland: true,
+    x11: false,
+    paste: ['-M', 'ctrl', 'v', '-m', 'ctrl'],
+    type: (text) => ['--', text],
+  },
   // Writes to /dev/uinput, so it is below the display server and works on
   // both — at the cost of needing the daemon running and uinput permissions.
   // Raw evdev codes: 29 is left ctrl, 47 is V; :1 is press, :0 is release.
-  { bin: 'ydotool', args: ['key', '29:1', '47:1', '47:0', '29:0'], wayland: true, x11: true },
+  {
+    bin: 'ydotool',
+    wayland: true,
+    x11: true,
+    paste: ['key', '29:1', '47:1', '47:0', '29:0'],
+    type: (text) => ['type', '--', text],
+  },
   // XTEST. --clearmodifiers stops a modifier you are still holding from
   // turning Ctrl+V into some other chord.
-  { bin: 'xdotool', args: ['key', '--clearmodifiers', 'ctrl+v'], wayland: false, x11: true },
+  {
+    bin: 'xdotool',
+    wayland: false,
+    x11: true,
+    paste: ['key', '--clearmodifiers', 'ctrl+v'],
+    // A small delay per key: at 0 some applications drop characters, because
+    // XTEST can deliver them faster than the client reads its event queue.
+    type: (text) => ['type', '--clearmodifiers', '--delay', '4', '--', text],
+  },
 ];
 
 // Resolved once: PATH does not change under a running app, and this is on the
 // path between "transcribed" and "text appears".
-let pasteTool;
-function resolvePasteTool() {
-  if (pasteTool === undefined) {
-    pasteTool = PASTE_TOOLS.find(
+let inputTool;
+function resolveInputTool() {
+  if (inputTool === undefined) {
+    inputTool = INPUT_TOOLS.find(
       (t) => (IS_WAYLAND ? t.wayland : t.x11) && onPath(t.bin),
     ) || null;
   }
-  return pasteTool;
+  return inputTool;
 }
 
 const AUTOSTART_DIR = path.join(
@@ -81,7 +103,7 @@ module.exports = {
   commandExample: '/usr/bin/gedit %s',
 
   capabilities() {
-    const tool = resolvePasteTool();
+    const tool = resolveInputTool();
     const warnings = [];
 
     if (!tool) {
@@ -104,12 +126,21 @@ module.exports = {
   },
 
   paste: () => new Promise((resolve, reject) => {
-    const tool = resolvePasteTool();
+    const tool = resolveInputTool();
     if (!tool) {
       reject(new Error('No paste helper installed — the text is on the clipboard.'));
       return;
     }
-    execFile(tool.bin, tool.args, () => resolve());
+    execFile(tool.bin, tool.paste, () => resolve());
+  }),
+
+  typeText: (text) => new Promise((resolve, reject) => {
+    const tool = resolveInputTool();
+    if (!tool) {
+      reject(new Error('No input helper installed — install xdotool, wtype or ydotool.'));
+      return;
+    }
+    execFile(tool.bin, tool.type(text), (err) => (err ? reject(err) : resolve()));
   }),
 
   ducking: {

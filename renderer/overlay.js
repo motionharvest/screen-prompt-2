@@ -335,7 +335,9 @@ window.api.onOverlayCmd(async (cmd) => {
       phase = 'idle';
       stopAnim();
       // A keyword supplies its own line; otherwise say where the text went.
-      setPill('done', cmd.label || (cmd.pasted ? '✓ Pasted — ' : '✓ Copied — ') + cmd.text);
+      // A keyword supplies its own line; otherwise main says which of paste,
+      // copy or type actually happened.
+      setPill('done', cmd.label || `✓ ${cmd.verb || 'Copied'} — ${cmd.text}`);
       playTones('done', cmd.sounds);
       break;
 

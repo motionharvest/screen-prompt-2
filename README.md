@@ -23,8 +23,14 @@ no figures — just voice to text.
   recordings (a toggle, on by default), so the shortcut begins capturing in the
   same frame instead of waiting ~230 ms for an audio device to open. See
   [Latency](#latency).
-- **Paste or copy** — when transcription finishes the text is copied to the
-  clipboard, and can optionally be pasted straight into the active app.
+- **Paste, type, or copy** — three ways for the words to arrive:
+  - **Paste** copies and then pastes into the active app. Optionally puts the
+    previous clipboard contents back afterwards, so dictating does not cost you
+    whatever you had copied.
+  - **Type** enters the text as keystrokes and never touches the clipboard at
+    all. Slower for long transcripts, and some editors will autocomplete over
+    it, but nothing you had copied is disturbed.
+  - **Copy only** leaves it on the clipboard for you to paste yourself.
 - **Overlay** — a small always-on-top pill with a live audio spectrum while
   you speak; it never steals focus. While recording it sits at the bottom of
   whichever monitor the mouse is on, and follows if you cross to another one.
@@ -121,6 +127,7 @@ Everything works everywhere except where noted:
 | --- | --- | --- | --- |
 | Global shortcut | ✅ | ✅ needs Accessibility | ✅ X11 · ⚠️ Wayland, see below |
 | Auto-paste | ✅ | ✅ needs Accessibility | ✅ with a helper installed |
+| Type mode | ✅ | ✅ needs Accessibility | ✅ with a helper installed |
 | Volume ducking | ✅ per-app | ⚠️ whole output only | ✅ per-app |
 | Launch-an-app keyword | ✅ Start menu | ✅ /Applications | ✅ `.desktop` entries |
 | Start at login | ✅ registry | ✅ login item | ✅ XDG autostart |
@@ -206,6 +213,7 @@ all live in `platform/`:
 | --- | --- | --- | --- |
 | venv interpreter | `.venv\Scripts\python.exe` | `.venv/bin/python3` | `.venv/bin/python3` |
 | paste keystroke | `paste.vbs` (SendKeys) | `osascript` | `wtype` / `ydotool` / `xdotool` |
+| typing text | `type-text.ps1` (SendInput) | `osascript` | the same three, `type` |
 | ducking helper | `audio/ducker.ps1` | `audio/ducker.py` | `audio/ducker.py` |
 | login item | registry `Run` key | `setLoginItemSettings` | `~/.config/autostart` |
 
@@ -322,7 +330,20 @@ the success line. Without that a keyword can only ever claim it worked.
   volumes. Two backstops sit behind that: nothing already at or below the duck
   level is ducked again, and nothing is ever set below 2%.
 - If auto-paste is unavailable, the transcript is still on the clipboard —
-  the feature degrades to "paste it yourself" rather than losing text.
+  the feature degrades to "paste it yourself" rather than losing text. Type
+  mode falls back the same way: a dirty clipboard beats a transcript that went
+  nowhere.
+- Typing uses `SendInput` with `KEYEVENTF_UNICODE` on Windows rather than
+  `SendKeys`, because SendKeys resolves each character through the current
+  keyboard layout and silently drops exactly the curly apostrophes and em
+  dashes the tidying leaves behind. The helper is kept running between
+  transcripts: starting it costs ~400 ms, a line once warm costs ~5 ms.
+- Restoring the clipboard waits 400 ms after the paste before putting the old
+  contents back. `Ctrl+V` returns immediately and the application reads the
+  clipboard later on its own thread, with no event to wait for — restore too
+  soon and the paste lands empty. Text, formatting and images are preserved;
+  copied *files* cannot be, so a clipboard holding files is left holding the
+  transcript instead.
 
 ## Licence
 

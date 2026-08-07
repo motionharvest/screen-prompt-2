@@ -119,6 +119,9 @@
       font-variant-numeric: tabular-nums;
     }
     #duck-row.off #duck-value { color: #565b6b; }
+    /* A switch row that does not apply in the current mode: dimmed rather than
+       hidden, so the option stays discoverable from the mode that lacks it. */
+    .switch-row.off { opacity: 0.4; }
 
     .switch-row { display: flex; align-items: center; justify-content: space-between; }
     .switch-row .t { font-size: 13px; }
@@ -205,10 +208,26 @@
         <div class="t">Paste</div>
         <div class="d">Copy, then paste into the active app</div>
       </label>
+      <label><input type="radio" name="output" value="type">
+        <div class="t">Type</div>
+        <div class="d">Enter it as keystrokes, clipboard untouched</div>
+      </label>
       <label><input type="radio" name="output" value="clipboard">
         <div class="t">Copy only</div>
         <div class="d">Leave the text on the clipboard</div>
       </label>
+    </div>
+    <!-- Only meaningful in paste mode; shown disabled otherwise rather than
+         hidden, so the option is discoverable from the mode that lacks it. -->
+    <div class="switch-row" style="margin-top: 12px;" id="restore-clipboard-row">
+      <div>
+        <div class="t">Put the clipboard back afterwards</div>
+        <div class="d" style="color:#8b8fa0; font-size:11.5px; margin-top:2px;">
+          Saves what was on the clipboard, pastes the transcript, then restores
+          it. Copied files cannot be restored — only text, formatting and images.
+        </div>
+      </div>
+      <input type="checkbox" class="switch" id="restore-clipboard">
     </div>
   </div>
 

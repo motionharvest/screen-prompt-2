@@ -23,7 +23,13 @@ const SETTINGS_PATH = () => path.join(app.getPath('userData'), 'settings.json');
 const DEFAULT_SETTINGS = {
   shortcut: { mods: ['ctrl', 'alt'], keycode: UiohookKey.D, keyName: 'D', isModifier: false },
   mode: 'toggle',            // 'toggle' | 'hold'
-  output: 'paste',           // 'paste' (copy + paste) | 'clipboard' (copy only)
+  // 'paste'     copy, then paste
+  // 'clipboard' copy only
+  // 'type'      enter the text as keystrokes; the clipboard is never touched
+  output: 'paste',
+  // Paste mode only: put back whatever was on the clipboard before the
+  // transcript displaced it.
+  restoreClipboard: false,
   sounds: true,
   tidy: true,                // strip fillers and stutters from the transcript
   keywords: [],              // [{word, type: 'url'|'command', target}]
@@ -1060,19 +1066,85 @@ async function handleAudio(buffer, duration, cancelled, error) {
       return;
     }
 
-    clipboard.writeText(text);
-    if (settings.output === 'paste') await pasteIntoActiveApp();
+    const verb = await deliver(text);
     backToIdle();
-    finishOverlay({
-      cmd: 'done', sounds: settings.sounds, text,
-      pasted: settings.output === 'paste',
-    }, 1600);
+    finishOverlay({ cmd: 'done', sounds: settings.sounds, text, verb }, 1600);
   } catch (err) {
     backToIdle();
     finishOverlay({ cmd: 'error', sounds: settings.sounds, message: String(err.message || err) }, 2600);
   } finally {
     fs.unlink(wavPath, () => { });
   }
+}
+
+// ---------------------------------------------------------------- delivery --
+
+// How long to leave the transcript on the clipboard before putting the previous
+// contents back. Ctrl+V returns the instant it is sent; the application reads
+// the clipboard some milliseconds later, on its own thread, and there is no
+// event to wait for. Too short and the paste arrives empty or stale, so this is
+// generous — it only costs anything when clipboard restore is switched on.
+const CLIPBOARD_SETTLE_MS = 400;
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Text, HTML, RTF and images are preserved. Copied *files* are not: Electron
+// exposes no way to write file references back, so a clipboard holding files
+// cannot be restored — it is left holding the transcript instead.
+function readClipboard() {
+  const image = clipboard.readImage();
+  return {
+    hadContent: clipboard.availableFormats().length > 0,
+    text: clipboard.readText(),
+    html: clipboard.readHTML(),
+    rtf: clipboard.readRTF(),
+    image: image.isEmpty() ? null : image,
+  };
+}
+
+function writeClipboard(saved) {
+  if (!saved.hadContent) { clipboard.clear(); return; }
+  const data = {};
+  if (saved.text) data.text = saved.text;
+  if (saved.html) data.html = saved.html;
+  if (saved.rtf) data.rtf = saved.rtf;
+  if (saved.image) data.image = saved.image;
+  // Nothing writable came back — the clipboard held something this cannot
+  // reproduce, and leaving the transcript there is less surprising than
+  // clearing it outright.
+  if (Object.keys(data).length) clipboard.write(data);
+}
+
+// Gets the transcript where it is going, and returns the past-tense verb the
+// overlay reports.
+async function deliver(text) {
+  if (settings.output === 'type') {
+    try {
+      await platform.typeText(text);
+      return 'Typed';
+    } catch (err) {
+      // Falls back rather than losing the words. Type mode exists to keep the
+      // clipboard clean, but a dirty clipboard beats a transcript that went
+      // nowhere.
+      console.error('[type]', err.message);
+      clipboard.writeText(text);
+      return 'Copied';
+    }
+  }
+
+  const previous = settings.output === 'paste' && settings.restoreClipboard
+    ? readClipboard()
+    : null;
+
+  clipboard.writeText(text);
+  if (settings.output !== 'paste') return 'Copied';
+
+  await pasteIntoActiveApp();
+  if (previous) {
+    await delay(CLIPBOARD_SETTLE_MS);
+    writeClipboard(previous);
+  }
+  return 'Pasted';
 }
 
 // ------------------------------------------------------------------- paste --
@@ -1119,6 +1191,7 @@ ipcMain.handle('settings:get', () => ({
     theme: settings.theme, duck: settings.duck, duckLevel: settings.duckLevel,
     tidy: settings.tidy, keywords: settings.keywords,
     keepMicWarm: settings.keepMicWarm,
+    restoreClipboard: settings.restoreClipboard,
   },
   pretty: prettyShortcut(settings.shortcut),
   appState,
@@ -1152,7 +1225,8 @@ ipcMain.handle('platform:request-permission', () => (
 ));
 
 ipcMain.handle('settings:set', (_e, partial) => {
-  for (const key of ['mode', 'output', 'sounds', 'theme', 'duckLevel', 'tidy']) {
+  for (const key of ['mode', 'output', 'sounds', 'theme', 'duckLevel', 'tidy',
+    'restoreClipboard']) {
     if (partial[key] !== undefined) settings[key] = partial[key];
   }
   if (partial.launchAtStartup !== undefined) {
@@ -1257,5 +1331,7 @@ if (!gotLock) {
     try { uIOhook.stop(); } catch { }
     sidecar.stop();
     ducker.stop();
+    // Closes the typing helper, if type mode ever started one.
+    platform.shutdown?.();
   });
 }

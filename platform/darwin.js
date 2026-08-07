@@ -22,6 +22,14 @@ const ROOT = path.join(__dirname, '..');
 const PASTE_SCRIPT =
   'tell application "System Events" to keystroke "v" using command down';
 
+// AppleScript string literals cannot contain a raw newline, so a multi-line
+// transcript becomes a concatenation with `return` between the pieces —
+// `keystroke "a" & return & "b"` types the line break as an actual Return.
+function appleScriptString(text) {
+  const quote = (s) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return text.replace(/\r\n?/g, '\n').split('\n').map(quote).join(' & return & ');
+}
+
 module.exports = {
   name: 'darwin',
   prettyName: 'macOS',
@@ -59,6 +67,16 @@ module.exports = {
 
   paste: () => new Promise((resolve) => {
     execFile('osascript', ['-e', PASTE_SCRIPT], () => resolve());
+  }),
+
+  typeText: (text) => new Promise((resolve, reject) => {
+    // The script goes in over stdin (`osascript -`) rather than as -e: a
+    // transcript has no length limit worth trusting to an argument list.
+    const child = execFile('osascript', ['-'], (err) => (err ? reject(err) : resolve()));
+    child.stdin.end(
+      `tell application "System Events" to keystroke ${appleScriptString(text)}`,
+      'utf8',
+    );
   }),
 
   ducking: {
