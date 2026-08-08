@@ -158,10 +158,13 @@ def _item_text(item) -> str:
     return text
 
 
-def transcribe(path: str) -> str:
+def transcribe(path: str, chunk: bool = True) -> str:
     if not state["ready"]:
         raise RuntimeError("model not loaded yet")
-    if wav_seconds(path) <= 25.0:
+    # With chunking off ("skip chunking" in the app), even long clips go to the
+    # model in a single pass: no VAD model, no per-segment calls. It is faster,
+    # at the cost of accuracy on clips well past Parakeet's ~30s window.
+    if not chunk or wav_seconds(path) <= 25.0:
         results = state["model"].recognize(path)
     else:
         results = state["vad_model"].recognize(path)
@@ -202,7 +205,8 @@ def main() -> None:
         req_id = req.get("id")
         if req.get("cmd") == "transcribe":
             try:
-                emit({"id": req_id, "text": transcribe(req["wav"])})
+                emit({"id": req_id,
+                      "text": transcribe(req["wav"], req.get("chunk", True))})
             except Exception as exc:  # noqa: BLE001
                 emit({"id": req_id, "error": str(exc)})
 

@@ -168,6 +168,7 @@ async function init() {
   $('sounds').checked = state.settings.sounds;
   $('startup').checked = state.settings.launchAtStartup;
   $('tidy').checked = state.settings.tidy;
+  $('skip-chunking').checked = state.settings.skipChunking;
   $('keep-mic-warm').checked = state.settings.keepMicWarm;
   $('restore-clipboard').checked = state.settings.restoreClipboard;
   showRestoreClipboard(state.settings.output);
@@ -199,6 +200,7 @@ for (const input of document.querySelectorAll('input[name="theme"]')) {
   input.addEventListener('change', () => window.api.setSettings({ theme: input.value }));
 }
 $('tidy').addEventListener('change', (e) => window.api.setSettings({ tidy: e.target.checked }));
+$('skip-chunking').addEventListener('change', (e) => window.api.setSettings({ skipChunking: e.target.checked }));
 $('keep-mic-warm').addEventListener('change', (e) => window.api.setSettings({ keepMicWarm: e.target.checked }));
 $('restore-clipboard').addEventListener('change', (e) => window.api.setSettings({ restoreClipboard: e.target.checked }));
 $('duck').addEventListener('change', (e) => {

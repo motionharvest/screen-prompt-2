@@ -200,7 +200,7 @@ Electron shell + Python sidecar:
 | GUI, tray, state machine | Electron main (`main.js`) | windows, clipboard, settings |
 | Global shortcut | `uiohook-napi` in main | raw key-down/up events, so hold-to-record and lone-modifier shortcuts work — Electron's own `globalShortcut` can't do either |
 | Mic capture, spectrum, tones | overlay renderer (Web Audio) | records straight at 16 kHz mono, `AnalyserNode` drives the bars |
-| Transcription | `asr/server.py` (onnx-asr) | Parakeet TDT 0.6B v2 + Silero VAD for recordings over ~25 s |
+| Transcription | `asr/server.py` (onnx-asr) | Parakeet TDT 0.6B v2 + Silero VAD for recordings over ~25 s (VAD skippable via “Skip chunking” for speed) |
 | Per-OS behaviour | `platform/*.js` | one adapter per platform, see below |
 
 Electron was chosen over Tauri because the audio pipeline (capture, spectrum,

@@ -32,6 +32,12 @@ const DEFAULT_SETTINGS = {
   restoreClipboard: false,
   sounds: true,
   tidy: true,                // strip fillers and stutters from the transcript
+  // Long recordings normally go through voice-activity chunking (Parakeet is
+  // built for ~30s windows). But chunking runs the VAD model plus one call per
+  // segment, so it is *slower* than a single pass — measurably so up to a
+  // minute or two. Turn this on to always transcribe in one pass and skip the
+  // chunking, trading a small quality risk on very long clips for speed.
+  skipChunking: false,
   keywords: [],              // [{word, type: 'url'|'command', target}]
   theme: 'default',          // overlay colour scheme: 'default' | 'synthwave'
   duck: false,               // quieten other apps while recording
@@ -431,7 +437,7 @@ class Sidecar {
     }
   }
 
-  transcribe(wavPath) {
+  transcribe(wavPath, chunk = true) {
     return new Promise((resolve, reject) => {
       if (!this.proc || this.state !== 'ready') {
         reject(new Error(this.state === 'loading'
@@ -441,7 +447,7 @@ class Sidecar {
       }
       const id = this.nextId++;
       this.pending.set(id, { resolve, reject });
-      this.proc.stdin.write(JSON.stringify({ id, cmd: 'transcribe', wav: wavPath }) + '\n');
+      this.proc.stdin.write(JSON.stringify({ id, cmd: 'transcribe', wav: wavPath, chunk }) + '\n');
     });
   }
 
@@ -1071,7 +1077,7 @@ async function handleAudio(buffer, duration, cancelled, error) {
   const generation = cancelGeneration;
   try {
     fs.writeFileSync(wavPath, Buffer.from(buffer));
-    const raw = (await sidecar.transcribe(wavPath)).trim();
+    const raw = (await sidecar.transcribe(wavPath, !settings.skipChunking)).trim();
     if (generation !== cancelGeneration) {
       trace('handleAudio abandoned', 'cancelled while transcribing');
       return;
@@ -1223,6 +1229,7 @@ ipcMain.handle('settings:get', () => ({
     launchAtStartup: launchAtStartupEnabled(), model: settings.model,
     theme: settings.theme, duck: settings.duck, duckLevel: settings.duckLevel,
     tidy: settings.tidy, keywords: settings.keywords,
+    skipChunking: settings.skipChunking,
     keepMicWarm: settings.keepMicWarm,
     restoreClipboard: settings.restoreClipboard,
   },
@@ -1259,7 +1266,7 @@ ipcMain.handle('platform:request-permission', () => (
 
 ipcMain.handle('settings:set', (_e, partial) => {
   for (const key of ['mode', 'output', 'sounds', 'theme', 'duckLevel', 'tidy',
-    'restoreClipboard']) {
+    'skipChunking', 'restoreClipboard']) {
     if (partial[key] !== undefined) settings[key] = partial[key];
   }
   if (partial.launchAtStartup !== undefined) {
