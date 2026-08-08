@@ -123,11 +123,12 @@
        hidden, so the option stays discoverable from the mode that lacks it. */
     .switch-row.off { opacity: 0.4; }
 
-    .switch-row { display: flex; align-items: center; justify-content: space-between; }
+    .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .switch-row .t { font-size: 13px; }
     input[type="checkbox"].switch {
       appearance: none; width: 38px; height: 22px; border-radius: 11px;
       background: #2c3140; position: relative; cursor: pointer; transition: background 0.15s;
+      flex: none;
     }
     input[type="checkbox"].switch:checked { background: #d8825a; }
     input[type="checkbox"].switch::after {
