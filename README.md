@@ -36,9 +36,12 @@ no figures — just voice to text.
     all. Slower for long transcripts, and some editors will autocomplete over
     it, but nothing you had copied is disturbed.
   - **Copy only** leaves it on the clipboard for you to paste yourself.
-- **Overlay** — a small always-on-top pill with a live audio spectrum while
-  you speak; it never steals focus. While recording it sits at the bottom of
-  whichever monitor the mouse is on, and follows if you cross to another one.
+- **Overlay** — a small always-on-top pill with a live waveform line while you
+  speak; it never steals focus. The line is the old spectrum bars joined into
+  one contour, with a per-band visual noise gate that learns your microphone's
+  background level, so silence reads flat and the swings are just your voice.
+  While recording it sits at the bottom of whichever monitor the mouse is on,
+  and follows if you cross to another one.
 - **Tidy transcripts** — optional (on by default): drops “um” and “uh”,
   collapses stutters (`I I I'm` → `I'm`, `the the` → `the`) and abandoned
   restarts (`I d I don't know` → `I don't know`), squeezes out the blank runs,
@@ -199,7 +202,7 @@ Electron shell + Python sidecar:
 | --- | --- | --- |
 | GUI, tray, state machine | Electron main (`main.js`) | windows, clipboard, settings |
 | Global shortcut | `uiohook-napi` in main | raw key-down/up events, so hold-to-record and lone-modifier shortcuts work — Electron's own `globalShortcut` can't do either |
-| Mic capture, spectrum, tones | overlay renderer (Web Audio) | records straight at 16 kHz mono, `AnalyserNode` drives the bars |
+| Mic capture, spectrum, tones | overlay renderer (Web Audio) | records straight at 16 kHz mono, `AnalyserNode` drives the waveform line |
 | Transcription | `asr/server.py` (onnx-asr) | Parakeet TDT 0.6B v2 + Silero VAD for recordings over ~25 s (VAD skippable via “Skip chunking” for speed) |
 | Per-OS behaviour | `platform/*.js` | one adapter per platform, see below |
 

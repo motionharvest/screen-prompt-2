@@ -572,7 +572,7 @@ function createSettingsWindow() {
 
 function createOverlayWindow() {
   overlayWin = new BrowserWindow({
-    width: 360, height: 120, show: false, frame: false, transparent: true,
+    width: 168, height: 80, show: false, frame: false, transparent: true,
     resizable: false, movable: false, alwaysOnTop: true, skipTaskbar: true,
     focusable: false, hasShadow: false,
     webPreferences: {

@@ -46,12 +46,12 @@
     }
 
     #pill {
-      width: 336px; height: 96px; border-radius: 20px;
+      width: 148px; height: 60px; border-radius: 14px;
       background: var(--pill-bg);
       border: 1px solid var(--pill-border);
       box-shadow: var(--pill-shadow);
       display: flex; flex-direction: column; align-items: center;
-      justify-content: center; gap: 6px; padding: 12px 20px;
+      justify-content: center; gap: 5px; padding: 10px 12px;
       transition: border-color 0.25s ease, background 0.25s ease;
     }
     /* No transition on the way *into* recording. The pill is the confirmation
@@ -65,10 +65,10 @@
     }
     #pill.done      { border-color: var(--border-done); }
     #pill.error     { border-color: var(--border-error); }
-    canvas { width: 296px; height: 44px; }
+    canvas { width: 124px; height: 17px; }
     #label {
-      font-size: 12px; letter-spacing: 0.04em; color: var(--label);
-      max-width: 296px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-size: 11px; letter-spacing: 0.03em; color: var(--label);
+      max-width: 124px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     #pill.done #label { color: var(--label-done); }
     #pill.error #label { color: var(--label-error); }
@@ -76,7 +76,7 @@
 </head>
 <body>
   <div id="pill">
-    <canvas id="spectrum" width="592" height="88"></canvas>
+    <canvas id="spectrum" width="248" height="34"></canvas>
     <div id="label">Listening…</div>
   </div>
   <script src="overlay.js"></script>

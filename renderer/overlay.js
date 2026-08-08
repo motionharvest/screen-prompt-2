@@ -106,8 +106,11 @@ async function ensureCapture() {
     const source = audioCtx.createMediaStreamSource(media);
 
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.75;
+    analyser.fftSize = 512;
+    // The line's height is driven by frequency energy, and this smooths that data
+    // across frames inside the analyser itself — the first line of defence against
+    // the height jumping around too fast.
+    analyser.smoothingTimeConstant = 0.82;
     source.connect(analyser);
 
     await audioCtx.audioWorklet.addModule('capture-worklet.js');
@@ -192,7 +195,6 @@ function encodeWav(samples, rate) {
 
 // --------------------------------------------------------------- spectrum --
 
-const BARS = 27;
 let animId = null;
 let phase = 'idle'; // idle | recording | processing
 
@@ -213,45 +215,108 @@ function applyTheme(theme) {
   };
 }
 
+// The spectrum-analyzer bars, drawn as one continuous line instead of 27
+// separate rectangles. Each node is exactly what a bar's height used to be —
+// the same non-linear sweep across the low bins where speech lives — but the
+// tips are joined into a smooth curve rising from a baseline at the bottom of
+// the canvas. So it keeps the "how tall things are" readout that worked, just
+// as a single sculpted contour that rises and falls in place. Nothing scrolls
+// sideways: x is frequency, not time.
+const NODES = 27;      // same resolution as the bars had
+const AMP_GAIN = 2.2;  // how strongly energy above the noise floor maps to height
+const FILL = 0.95;     // fraction of the half-height a full swing reaches
+const EASE = 0.22;     // per-frame move toward the new height; lower = calmer
+const traceA = new Float32Array(NODES); // smoothed per-node amplitude, 0..1
+
+// Visual noise gate. A cheap microphone holds every band a little above zero,
+// so in silence the line hovers instead of resting. Each band therefore learns
+// its own background level: the floor drops quickly whenever the band goes
+// quieter (so it finds true silence fast) and creeps up only very slowly when
+// the band is louder (so your voice, which comes and goes, never gets absorbed
+// into it — but a fan that hums constantly does). What is drawn is only the
+// energy *above* that floor plus a small margin, renormalised so full-scale
+// speech still reaches full height.
+const FLOOR_DROP = 0.12;   // per-frame pull down toward a quieter reading
+const FLOOR_RISE = 0.004;  // per-frame creep up toward a louder reading
+const GATE = 0.05;         // margin above the floor before anything shows
+const noiseF = new Float32Array(NODES); // learned background level per band
+
+// One half of the mirrored outline, as a smooth curve through the node points
+// (quadratics through segment midpoints — bar tips without the jaggedness).
+function traceHalf(pts) {
+  ctx2d.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i][0] + pts[i + 1][0]) / 2;
+    const my = (pts[i][1] + pts[i + 1][1]) / 2;
+    ctx2d.quadraticCurveTo(pts[i][0], pts[i][1], mx, my);
+  }
+  const last = pts[pts.length - 1];
+  ctx2d.lineTo(last[0], last[1]);
+}
+
 function drawFrame() {
   const W = canvas.width, H = canvas.height;
   ctx2d.clearRect(0, 0, W, H);
-  const gap = 6, bw = (W - gap * (BARS - 1)) / BARS;
+  const base = H - 3;              // the line rests here and rises from it
+  const swing = (H - 6) * FILL;
+  const t = performance.now() / 1000;
 
-  let values = new Array(BARS).fill(0);
-  if (phase === 'recording' && analyser) {
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteFrequencyData(data);
-    // Speech lives in the low bins at 16 kHz; sample them non-linearly so the
-    // bars use the whole width instead of crowding the left edge.
-    for (let i = 0; i < BARS; i++) {
-      const bin = Math.min(data.length - 1, Math.floor(Math.pow(i / BARS, 1.4) * data.length * 0.85));
-      values[i] = data[bin] / 255;
-    }
-  } else if (phase === 'processing') {
-    const t = performance.now() / 1000;
-    for (let i = 0; i < BARS; i++) {
-      values[i] = 0.12 + 0.10 * Math.sin(t * 5 - i * 0.55) ** 2;
-    }
-  }
-
-  // A scheme can ask for neon by setting --bar-glow; the default one leaves it
-  // at `none` and pays nothing for the shadow pass.
   const glow = bars.glow && bars.glow !== 'none';
   ctx2d.shadowColor = glow ? bars.glow : 'transparent';
-  ctx2d.shadowBlur = glow ? 10 : 0;
+  ctx2d.shadowBlur = glow ? 8 : 0;
 
-  for (let i = 0; i < BARS; i++) {
-    const h = Math.max(4, values[i] * (H - 8));
-    const x = i * (bw + gap), y = (H - h) / 2;
-    const grad = ctx2d.createLinearGradient(0, y, 0, y + h);
-    grad.addColorStop(0, bars.top);
-    grad.addColorStop(1, bars.bottom);
-    ctx2d.fillStyle = phase === 'processing' ? bars.processing : grad;
-    ctx2d.beginPath();
-    ctx2d.roundRect(x, y, bw, h, bw / 2);
-    ctx2d.fill();
+  // A horizontal gradient so the line is brightest in the middle, matching the
+  // top/bottom bar colours the schemes already define.
+  const grad = ctx2d.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0, bars.bottom);
+  grad.addColorStop(0.5, bars.top);
+  grad.addColorStop(1, bars.bottom);
+  ctx2d.strokeStyle = phase === 'processing' ? bars.processing : grad;
+  ctx2d.lineWidth = 2;
+  ctx2d.lineJoin = 'round';
+  ctx2d.lineCap = 'round';
+
+  ctx2d.beginPath();
+  if (phase === 'recording' && analyser) {
+    const freq = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(freq);
+    const bins = freq.length;
+    // Exactly the sweep the bars used: speech lives in the low bins at 16 kHz,
+    // sampled non-linearly so the energy spreads across the whole width.
+    const pts = [];
+    for (let i = 0; i < NODES; i++) {
+      const f = i / (NODES - 1);
+      const bin = Math.min(bins - 1, Math.floor(Math.pow(f, 1.4) * bins * 0.85));
+      const v = freq[bin] / 255;
+      // Track this band's background: fast down, very slow up (see above).
+      noiseF[i] += (v - noiseF[i]) * (v < noiseF[i] ? FLOOR_DROP : FLOOR_RISE);
+      // Only what clears the floor + gate is signal; renormalise the remaining
+      // range so loud speech still uses the full height.
+      const span = Math.max(0.15, 1 - noiseF[i] - GATE);
+      const signal = Math.max(0, v - noiseF[i] - GATE) / span;
+      const target = Math.min(1, signal * AMP_GAIN);
+      traceA[i] += (target - traceA[i]) * EASE;
+      const h = traceA[i] * swing;
+      pts.push([f * W, base - h]);
+    }
+    traceHalf(pts);
+  } else if (phase === 'processing') {
+    // No microphone here — a gentle travelling swell above the baseline keeps
+    // the pill feeling awake. (0.5 + 0.5·sin) keeps it from dipping below.
+    const POINTS = 72, HUMPS = 2.6, speed = 5, amp = swing * 0.3;
+    for (let i = 0; i <= POINTS; i++) {
+      const f = i / POINTS, x = f * W;
+      const env = Math.sin(Math.PI * f);
+      const lift = 0.5 + 0.5 * Math.sin(f * Math.PI * 2 * HUMPS + t * speed);
+      const y = base - lift * amp * env;
+      if (i === 0) ctx2d.moveTo(x, y);
+      else ctx2d.lineTo(x, y);
+    }
+  } else {
+    ctx2d.moveTo(0, base);
+    ctx2d.lineTo(W, base);
   }
+  ctx2d.stroke();
   ctx2d.shadowBlur = 0;
   animId = requestAnimationFrame(drawFrame);
 }
@@ -259,6 +324,7 @@ function drawFrame() {
 function startAnim() { if (animId === null) animId = requestAnimationFrame(drawFrame); }
 function stopAnim() {
   if (animId !== null) { cancelAnimationFrame(animId); animId = null; }
+  traceA.fill(0);
   ctx2d.clearRect(0, 0, canvas.width, canvas.height);
 }
 
@@ -334,10 +400,11 @@ window.api.onOverlayCmd(async (cmd) => {
     case 'done':
       phase = 'idle';
       stopAnim();
-      // A keyword supplies its own line; otherwise say where the text went.
       // A keyword supplies its own line; otherwise main says which of paste,
-      // copy or type actually happened.
-      setPill('done', cmd.label || `✓ ${cmd.verb || 'Copied'} — ${cmd.text}`);
+      // copy or type actually happened. The transcript itself is deliberately
+      // not shown — the pill is too small for it, and it has already landed
+      // wherever it was going.
+      setPill('done', cmd.label || `✓ ${cmd.verb || 'Copied'}`);
       playTones('done', cmd.sounds);
       break;
 
