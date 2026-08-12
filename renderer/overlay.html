@@ -6,7 +6,14 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { background: transparent; overflow: hidden; height: 100%; }
     body {
-      display: flex; align-items: center; justify-content: center;
+      /* Anchored to the bottom, not centred. The two shapes the window takes
+         share their bottom edge and their centre line, so pinning the pill to
+         that corner means the mark and the pill are drawn at the same place on
+         screen. The window can then resize around them without anything
+         appearing to move — which is what stops the shrink looking like a jump.
+         The 10px is the margin the shadow lives in, and is the same in both. */
+      display: flex; align-items: flex-end; justify-content: center;
+      padding-bottom: 10px;
       font-family: "Segoe UI", system-ui, sans-serif;
       -webkit-user-select: none;
     }
@@ -17,7 +24,10 @@
     body {
       --pill-bg: rgba(18, 20, 26, 0.92);
       --pill-border: rgba(255, 255, 255, 0.10);
-      --pill-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      /* Small enough to fit the 10px the window leaves around the pill. A wider
+         one is not a softer shadow here, it is a clipped one: the window ends
+         where the margin ends, and everything past that is cut off square. */
+      --pill-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
       --border-recording: rgba(232, 116, 76, 0.55);
       --border-done: rgba(94, 200, 132, 0.6);
       --border-error: rgba(226, 92, 92, 0.6);
@@ -32,7 +42,7 @@
     body[data-theme="synthwave"] {
       --pill-bg: rgba(37, 13, 66, 0.95);
       --pill-border: rgba(157, 78, 221, 0.38);
-      --pill-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 26px rgba(255, 46, 151, 0.20);
+      --pill-shadow: 0 2px 6px rgba(0, 0, 0, 0.55), 0 0 8px rgba(255, 46, 151, 0.30);
       --border-recording: rgba(255, 46, 151, 0.75);
       --border-done: rgba(0, 245, 212, 0.7);
       --border-error: rgba(255, 56, 100, 0.75);
@@ -53,7 +63,41 @@
       display: flex; flex-direction: column; align-items: center;
       justify-content: center; gap: 5px; padding: 10px 12px;
       transition: border-color 0.25s ease, background 0.25s ease;
+      /* The pill can be picked up and put somewhere. The cursor is the only
+         place that is said, so it is worth saying properly: the open hand while
+         the pointer is over it, the closed one while it is being carried. */
+      cursor: grab;
     }
+    body.dragging #pill { cursor: grabbing; }
+
+    /* Resting: nothing is happening, so there is nothing to draw and nothing to
+       say. What is left is the outline itself — a mark that says where the pill
+       lives and gives you something to take hold of. No fill, because at this
+       size a filled bar reads as a piece of interface rather than a hint, and
+       one line of shadow so it is still visible against a pale window.
+
+       The window does not change size between the two states; only this does.
+       Both are anchored to the bottom of the same window by the body's
+       flex-end, so the mark's lower edge is the pill's lower edge, on every
+       monitor, whatever the OS thinks the smallest window may be. main.js
+       repeats the 50 x 10 and the 10px inset to work out where a pointer has to
+       be to grab it — the two have to stay in step. */
+    body.resting #pill {
+      width: 50px; height: 10px; border-radius: 5px;
+      padding: 0; gap: 0; background: none;
+      border-color: var(--border-recording);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+      transition: border-color 0.2s ease, opacity 0.2s ease;
+      /* Checked against both a white document and a black one: much below this
+         the outline disappears into a pale background, and much above it stops
+         being something you can ignore while working. */
+      opacity: 0.85;
+    }
+    /* Brightening under the pointer is the only affordance it needs: the window
+       is click-through until the pointer is over it, so :hover happening at all
+       means it is ready to be picked up. */
+    body.resting #pill:hover { opacity: 1; }
+    body.resting canvas, body.resting #label { display: none; }
     /* No transition on the way *into* recording. The pill is the confirmation
        that the shortcut registered, so it has to be fully there the moment it
        appears rather than easing up over a quarter second — by which time you

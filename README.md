@@ -41,7 +41,10 @@ no figures — just voice to text.
   one contour, with a per-band visual noise gate that learns your microphone's
   background level, so silence reads flat and the swings are just your voice.
   While recording it sits at the bottom of whichever monitor the mouse is on,
-  and follows if you cross to another one.
+  and follows if you cross to another one — until you **drag it somewhere of
+  your own**, which pins it there for good. It can also be **kept on screen**
+  between dictations, resting as a small outline you can grab at any time. See
+  [Where the pill sits](#where-the-pill-sits).
 - **Tidy transcripts** — optional (on by default): drops “um” and “uh”,
   collapses stutters (`I I I'm` → `I'm`, `the the` → `the`) and abandoned
   restarts (`I d I don't know` → `I don't know`), squeezes out the blank runs,
@@ -49,6 +52,10 @@ no figures — just voice to text.
   genuinely double — *had had*, *that that*, *very very*, *no no* — are left
   alone. `npm test` covers it, including the false positives a looser rule
   would cause (`the theme`, `so something`).
+- **Dictionary** — the words the model cannot know. Say “clawed”, spell it
+  `Claude`, and every transcript from then on says Claude. Whole words and
+  phrases, case ignored when listening, replacement spelled exactly as you
+  wrote it. See [Dictionary](#dictionary).
 - **Keywords** — say a keyword first and the rest of the sentence becomes a
   query: “Google, what is the capital of Indiana” opens the search instead of
   typing the words. Each keyword opens a URL or runs a command, with `%s`
@@ -102,6 +109,21 @@ npm start
 `npm run setup` runs `install.ps1` on Windows and `install.sh` elsewhere. The
 quantized model (~600 MB) downloads into the Hugging Face cache on first
 launch; the status dot in the settings window turns green when it is ready.
+
+### Starting it without a terminal (Windows)
+
+`npm start` ties the app to a terminal that has to stay open for the whole
+session. Setup also builds **`Screen Prompt 2.exe`** in the repo root: a 7 KB
+stub that starts the app, exits, and leaves it running in the tray. Double-click
+it, or right-click → *Pin to taskbar* / *Send to* → *Desktop* for a shortcut.
+Rebuild it any time with `npm run launcher`.
+
+It is a launcher, not a packaged build — the app still runs from this checkout,
+so `git pull` updates it and nothing has to be reinstalled. Keep the exe in the
+repo root; it finds Electron relative to itself. See
+[`launcher/README.md`](launcher/README.md). To have it start by itself at login,
+use **Start with Windows** in the settings window rather than a Startup-folder
+shortcut — it registers the same launch with `--hidden`, straight into the tray.
 
 ### Per-platform prerequisites
 
@@ -244,15 +266,149 @@ Stored next to the app's user data:
 | macOS | `~/Library/Application Support/Screen Prompt 2/settings.json` |
 | Linux | `~/.config/Screen Prompt 2/settings.json` |
 
+The transcript history is `history.json` in the same directory. See
+[History](#history).
+
+Both files are protected against the one accident that loses them. A UTF-8
+byte-order mark is stripped on read, because `JSON.parse` rejects a file that
+starts with one and plenty of tools — PowerShell's `Set-Content -Encoding UTF8`
+among them — write one on every save, invisibly. If a file still cannot be read
+it is **not** treated as a first run: the app copies it to
+`settings.json.unreadable` (or `history.json.unreadable`), starts on the
+defaults, and says so in a warning at the top of the settings window, so the
+next thing you change cannot overwrite it unseen. Each ordinary save also leaves
+the previous contents in `settings.json.bak`, and a save made while the warning
+is showing deliberately does not, since that copy would only hold the defaults.
+
 Everything has a GUI control except `model` and `quantization` (set
 `"quantization": ""` for the full-precision model — bigger download, slightly
 better accuracy).
+
+The settings window is five tabs, and they are the journey one dictation takes
+rather than five bins of related switches:
+
+| Tab | Governs | Holds |
+| --- | --- | --- |
+| **Recording** | what starts a dictation, and where the words go when it ends | shortcut, toggle or hold, paste / type / copy only, restore the clipboard |
+| **Processing** | what the transcript becomes before it goes anywhere | tidying, chunking, dictionary |
+| **Keywords** | the words that make a dictation do something instead of becoming text | the keyword list |
+| **History** | what you have already dictated | the last 30 days of transcripts, click to copy |
+| **App** | how the app behaves and announces itself, rather than any one dictation | colours, sounds, keeping the pill on screen and where it sits, keep the mic ready, duck other audio, start at login |
+
+Every setting belongs to exactly one stage of that journey, which is what makes
+the placement decidable rather than a matter of taste; where a tab holds several
+cards they run in the order the work does, so Processing reads tidy →
+dictionary, the same order `handleAudio` applies them, and Keywords is the step
+after both. Keywords earns a tab of its own rather than a card because it is the
+list that grows: every other card is a fixed handful of switches, while that one
+is however many keywords you have come to rely on, two rows each. The status
+line and any platform warnings sit above the tabs, on all of them: whether the
+app works at all is not a section of the settings.
 
 **Start at login** points the login item at this checkout, so moving or
 renaming the directory breaks the entry — toggle it off and on again after a
 move. The OS, not the settings file, is the source of truth for the toggle's
 state, so disabling it in Task Manager's Startup tab (or macOS's Login Items)
 is reflected in the GUI.
+
+## Where the pill sits
+
+By default the pill follows you: it appears at the bottom of whichever monitor
+the mouse is on, and moves if you cross to another one mid-recording. When it
+is in the way, **drag it**. Grab it while it is on screen, drop it where you
+want it, and it stays there — on that monitor, at that spot, for every
+recording after.
+
+**Keep it on screen** (App → The pill) leaves it there between dictations,
+resting as a 50 × 10 outline: no level, no wording, nothing to read. It is
+enough to see where the pill lives and to get hold of it without having to start
+a recording first. Hovering brightens it and lets you drag it; talking opens it
+to full size. It grows upward and outward from the mark, so the pill arrives
+where you were already looking, and a spot chosen while resting is the same spot
+when it opens — one position is stored, and both shapes are worked out from it.
+
+The window never changes size — it is always the full pill's rectangle, and only
+what is drawn inside it changes. That is what makes the mark and the pill share
+a lower edge and a centre line on every monitor: they are the same box, and the
+alignment is a fact about the window rather than a sum that has to come out
+right. While resting, only the mark and a little around it takes the pointer, so
+the transparent remainder of the window is not quietly eating clicks meant for
+whatever is behind it.
+
+This replaced a version that resized the window between the two shapes, and the
+reason is worth recording. The smallest window Windows will create is a fixed
+number of *physical* pixels — measured here at 56 — which is 38 logical pixels
+on a 150% display but 56 on a 100% one. A 40-tall resting window was therefore
+granted 40 on one monitor and 56 on the other, and since the extra height is
+added below, the mark sat exactly 16 logical pixels lower than the pill it was
+supposed to line up with, on that monitor only.
+
+Dragging is what turns the following off. There is no mode to enter first: the
+gesture *is* the instruction, and **App → Overlay position** shows the switch it
+flipped. Turning that switch back on forgets the pinned spot and returns the
+pill to the bottom of the screen you are working on.
+
+Two details worth knowing. The pill is click-through, so it never swallows a
+click meant for the window underneath — except while the pointer is actually
+over it, which is the moment you are reaching for it anyway. And a pinned spot
+is pulled back onto the nearest screen if the monitor it was pinned to is
+unplugged or rearranged, so it cannot strand itself off the desktop.
+
+## History
+
+Every transcript is kept for **30 days**, newest first, on the History tab.
+Clicking one puts it back on the clipboard. It is stored beside the settings —
+`history.json` in the same directory — rather than inside them, because settings
+are rewritten every time you touch a switch and a month of dictation has no
+business riding along with them.
+
+Nothing leaves the machine, which is the same promise the transcription itself
+makes. What changed is that transcripts now reach the disk rather than living
+only in memory, so **Clear history** deletes the file outright, and the button
+asks a second time before it does.
+
+Retention is enforced on the way in and on the way out: entries older than 30
+days are dropped whenever the file is read and whenever a transcript is added,
+and the list is capped at 2000 entries so a very heavy month cannot grow it
+without bound. `npm test` covers the retention, the ordering and the cap.
+
+## Dictionary
+
+Parakeet spells what it hears, and it has never seen your colleague's name or
+the product you talk about all day. The dictionary is two columns — what it
+hears on the left, how it should be spelled on the right — applied to every
+transcript before the words go anywhere.
+
+| Heard | Spelled |
+| --- | --- |
+| `clawed` | `Claude` |
+| `clawed code` | `Claude Code` |
+| `iphone` | `iPhone` |
+| `definately` | `definitely` |
+| `dot com` | `.com` |
+
+The rules, all of which `npm test` covers:
+
+- **Whole words only.** `clawed` never fires inside `declawed`, and an entry
+  may be several words — “clawed code” is one entry, and beats the shorter
+  `clawed` wherever both could match.
+- **Case is ignored when listening**, so one entry covers “clawed”, “Clawed”
+  and “CLAWED”.
+- **The spelling is used exactly as you wrote it**, so `iPhone` keeps its small
+  i even at the start of a sentence. The one exception is a spelling with no
+  capitals of its own: it takes a capital where the word it replaced had one,
+  which is what makes `definately` → `Definitely` work after a full stop.
+- **One pass, left to right.** A replacement is never fed back through the
+  other entries, so `alpha`→`beta` and `beta`→`gamma` cannot chain into
+  `gamma`, and the order of the rows never changes the result.
+- **A spelling starting with `,` `.` `;` `:` `!` or `?` takes the space with
+  it**, so “example dot com” becomes `example.com` rather than `example .com`.
+- **Both halves or nothing.** A row with one side still empty is one you are in
+  the middle of typing; it is saved, and it never matches.
+
+The dictionary runs after the tidying and before the keywords, so a stutter is
+collapsed before it is looked up, and a keyword still fires when the model
+misheard its name.
 
 ## Keywords
 
@@ -327,8 +483,9 @@ the success line. Without that a keyword can only ever claim it worked.
   unaffected.
 - Closing the settings window keeps the app in the tray; quit from the tray
   menu.
-- Clicking the **Last transcription** box copies it back to the clipboard —
-  useful once something else has overwritten it.
+- Clicking any row in **History** copies that transcript back to the clipboard —
+  useful once something else has overwritten it, or once you want back something
+  you dictated last week.
 - Ducking restores volumes when the helper's stdin closes, so quitting the app
   mid-recording still puts the rest of the system back. It skips desktop event
   sounds and every process sharing this app's executable name (Chromium plays

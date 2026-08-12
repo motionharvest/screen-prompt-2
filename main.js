@@ -39,7 +39,18 @@ const DEFAULT_SETTINGS = {
   // chunking, trading a small quality risk on very long clips for speed.
   skipChunking: false,
   keywords: [],              // [{word, type: 'url'|'command', target}]
+  // Words the model reliably mishears, and how they should be spelled instead.
+  dictionary: [],            // [{from, to}]
   theme: 'default',          // overlay colour scheme: 'default' | 'synthwave'
+  // Where the pill goes. Following puts it at the bottom of whichever screen
+  // the mouse is on; dragging it turns that off and pins it to overlayPos,
+  // which is an absolute point in the same DIP space `screen` reports.
+  overlayFollow: true,
+  overlayPos: null,          // {x, y}, or null while following
+  // Keep the pill on screen between dictations, resting as a small mark that
+  // shows where it lives and can be dragged. Off, it appears only while there
+  // is something to say.
+  overlayAlways: false,
   duck: false,               // quieten other apps while recording
   duckLevel: 0.25,           // ...to this fraction of their own volume
   // Hold the microphone open between recordings. Opening it is a few hundred
@@ -58,21 +69,132 @@ const STARTED_HIDDEN = process.argv.includes('--hidden');
 
 let settings = { ...DEFAULT_SETTINGS };
 
-function loadSettings() {
+// Set when a file that exists could not be read. Shown in the settings window,
+// because a silent fall back to defaults looks exactly like the app forgetting
+// everything you ever told it.
+let dataWarning = '';
+
+// A byte-order mark is not JSON, and JSON.parse says so by throwing. Plenty of
+// editors write one, PowerShell's Set-Content writes one on every save, and the
+// three bytes are invisible in every tool that shows you the file — so the file
+// looks perfect and the app cannot read a word of it. Tolerated on the way in;
+// never written on the way out.
+function readJsonFile(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+}
+
+// A file that exists but cannot be parsed is not a first run. Something is in
+// there, it is just not readable, and overwriting it with defaults is how a
+// configuration gets destroyed by a bad byte. Keep it, and say so.
+function preserveUnreadable(file, err) {
   try {
-    const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH(), 'utf8'));
+    if (!fs.existsSync(file) || !fs.statSync(file).size) return '';
+    const kept = `${file}.unreadable`;
+    fs.copyFileSync(file, kept);
+    console.error(`could not read ${path.basename(file)}: ${err.message}`);
+    console.error(`the old file has been kept at ${kept}`);
+    return kept;
+  } catch (copyErr) {
+    console.error('could not preserve the unreadable file:', copyErr);
+    return '';
+  }
+}
+
+function loadSettings() {
+  const file = SETTINGS_PATH();
+  try {
+    const raw = readJsonFile(file);
     settings = { ...DEFAULT_SETTINGS, ...raw };
     if (!settings.shortcut || typeof settings.shortcut.keycode !== 'number') {
       settings.shortcut = { ...DEFAULT_SETTINGS.shortcut };
     }
-  } catch { /* first run */ }
+  } catch (err) {
+    if (err.code === 'ENOENT') return;   // a genuine first run
+    const kept = preserveUnreadable(file, err);
+    dataWarning = kept
+      ? `Your settings could not be read, so this session started with the defaults. `
+        + `The unreadable file has been kept at ${kept} — nothing was thrown away. `
+        + `Changing any setting will overwrite the live file, so copy anything you `
+        + `need out of that file first.`
+      : 'Your settings could not be read, so this session started with the defaults.';
+  }
 }
 
 function saveSettings() {
   try {
-    fs.mkdirSync(path.dirname(SETTINGS_PATH()), { recursive: true });
-    fs.writeFileSync(SETTINGS_PATH(), JSON.stringify(settings, null, 2));
+    const file = SETTINGS_PATH();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // The last readable copy, kept beside the live one. Saving happens on every
+    // flick of a switch, so this is the difference between one bad write and a
+    // configuration you have to rebuild from memory.
+    try {
+      if (!dataWarning && fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
+    } catch { /* a missing backup must never stop a save */ }
+    fs.writeFileSync(file, JSON.stringify(settings, null, 2));
   } catch (err) { console.error('settings save failed:', err); }
+}
+
+// ---------------------------------------------------------------- history --
+
+// Every transcript, kept for thirty days, newest first. In its own file rather
+// than in settings.json: settings are rewritten whenever you touch a switch,
+// and a month of dictation has no business riding along with them.
+//
+// It never leaves the machine — the same promise the transcription itself
+// makes — but it is now on disk rather than only in memory, which is why the
+// History tab says so and offers to clear it.
+
+const HISTORY_PATH = () => path.join(app.getPath('userData'), 'history.json');
+const HISTORY_DAYS = 30;
+// A ceiling as well as an age, so a very heavy month cannot grow the file
+// without bound. Thirty days of ordinary use lands nowhere near it.
+const HISTORY_MAX = 2000;
+
+let history = [];
+
+// Age and order are enforced in one place, on the way in and on the way out, so
+// a file edited by hand or written by an older build still comes back sane.
+function pruneHistory(entries) {
+  const cutoff = Date.now() - HISTORY_DAYS * 24 * 60 * 60 * 1000;
+  return entries
+    .filter((entry) => entry && typeof entry.text === 'string' && entry.text
+      && Number.isFinite(entry.at) && entry.at >= cutoff)
+    .map((entry) => ({ at: entry.at, text: entry.text }))
+    .sort((a, b) => b.at - a.at)
+    .slice(0, HISTORY_MAX);
+}
+
+function loadHistory() {
+  const file = HISTORY_PATH();
+  try {
+    const raw = readJsonFile(file);
+    history = pruneHistory(Array.isArray(raw) ? raw : []);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;   // nothing dictated yet
+    // Thirty days of transcripts are worth more than the settings are. Keep the
+    // file rather than starting an empty one over the top of it.
+    const kept = preserveUnreadable(file, err);
+    if (kept) {
+      dataWarning += `${dataWarning ? ' ' : ''}Your transcript history could not be read `
+        + `and has been kept at ${kept}; the History tab starts empty.`;
+    }
+  }
+}
+
+function saveHistory() {
+  try {
+    fs.mkdirSync(path.dirname(HISTORY_PATH()), { recursive: true });
+    fs.writeFileSync(HISTORY_PATH(), JSON.stringify(history));
+  } catch (err) { console.error('history save failed:', err); }
+}
+
+// Returns the entry so the caller can hand the settings window the same object
+// it just stored, rather than the window having to ask for the list again.
+function rememberTranscript(text) {
+  const entry = { at: Date.now(), text };
+  history = pruneHistory([entry, ...history]);
+  saveHistory();
+  return entry;
 }
 
 // ------------------------------------------------------------- auto-start --
@@ -553,9 +675,12 @@ let tray = null;
 let quitting = false;
 
 function createSettingsWindow() {
-  // Capped to the work area so the last card is still reachable on a short
-  // screen — the body scrolls if the window has to be smaller than the content.
-  const height = Math.min(1140, screen.getPrimaryDisplay().workArea.height - 60);
+  // Comfortably taller than any one tab, and capped to the work area so the
+  // last card is still reachable on a short screen. The headroom is for the two
+  // tabs that grow — Keywords and the dictionary — since every row it can show
+  // is a row you do not have to scroll to; the window no longer has to fit
+  // every setting at once.
+  const height = Math.min(900, screen.getPrimaryDisplay().workArea.height - 60);
   settingsWin = new BrowserWindow({
     width: 480, height, resizable: false, maximizable: false,
     title: 'Screen Prompt 2', icon: trayIcon(),
@@ -570,9 +695,44 @@ function createSettingsWindow() {
   });
 }
 
+// The pill's size in DIPs, kept as constants because positionOverlay must ask
+// for the size it *wants* rather than the size the window reports — see there.
+const OVERLAY_W = 168;
+const OVERLAY_H = 80;
+
+// Resting: the shape the pill takes when it is kept on screen between
+// dictations. There is nothing to show — no level to draw, nothing to say — so
+// it is a mark rather than a pill: enough to see where it lives and to get hold
+// of it, and small enough to forget about.
+//
+// The window does not change size for it. That is the whole design, and it is
+// the third attempt at this: the window stays the full pill's rectangle and
+// only what is *drawn* inside it changes. So the two shapes share their bottom
+// edge and their centre by construction rather than by arithmetic, there is no
+// resize to get out of step with the repaint, and the drag is the same drag in
+// both states.
+//
+// What forced it: the smallest window Windows will make is a fixed number of
+// *physical* pixels — measured at 56, which is 38 logical on a 150% screen but
+// 56 logical on a 100% one. A 40-tall window is therefore 40 tall on one
+// monitor and 56 on the other, and the 16 that the OS adds hangs below the edge
+// the mark was supposed to share. No arithmetic here can see that happen.
+const MARK_W = 50;
+const MARK_H = 10;
+// How far the mark sits above the window's bottom edge — the same margin the
+// full pill leaves, so the two line up. Kept in step with overlay.html, which
+// draws it.
+const MARK_INSET = 10;
+// The mark is small, and a pointer aimed at it should not have to be exact.
+const MARK_GRAB = 10;
+
+// Which of the two shapes is drawn. The window's geometry no longer depends on
+// this; only what is painted, and where the pointer counts as being over it.
+let overlayResting = false;
+
 function createOverlayWindow() {
   overlayWin = new BrowserWindow({
-    width: 168, height: 80, show: false, frame: false, transparent: true,
+    width: OVERLAY_W, height: OVERLAY_H, show: false, frame: false, transparent: true,
     resizable: false, movable: false, alwaysOnTop: true, skipTaskbar: true,
     focusable: false, hasShadow: false,
     webPreferences: {
@@ -580,7 +740,11 @@ function createOverlayWindow() {
       backgroundThrottling: false,
     },
   });
-  overlayWin.setIgnoreMouseEvents(true);
+  // Click-through, but forwarding the pointer's movements to the renderer so it
+  // can tell when the pointer is over the pill and ask for the clicks back —
+  // see setOverlayInteractive. Without `forward` the overlay is deaf as well as
+  // transparent to clicks, and there is no moment at which a drag could begin.
+  overlayWin.setIgnoreMouseEvents(true, { forward: true });
   overlayWin.setAlwaysOnTop(true, 'screen-saver');
   // macOS needs one more call to stay visible over a fullscreen app.
   platform.tuneOverlay?.(overlayWin);
@@ -588,6 +752,10 @@ function createOverlayWindow() {
   // recording after launch is as fast as every one after it.
   overlayWin.webContents.once('did-finish-load', () => {
     if (settings.keepMicWarm) overlayCmd({ cmd: 'warm' });
+    // Sent from here rather than at startup: a command dispatched before the
+    // renderer exists is a command nobody receives, and the resting mark would
+    // be an empty window sitting there.
+    if (settings.overlayAlways) restOverlay();
   });
   overlayWin.loadFile(path.join(__dirname, 'renderer', 'overlay.html'));
 }
@@ -599,15 +767,58 @@ function cursorDisplay() {
   return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
 }
 
+// A pinned position has to survive the monitor it was pinned to going away —
+// unplugged, or rearranged into a different corner of the desktop. Rather than
+// remember which display it was, the point is pulled back into whichever work
+// area is nearest to it now, which handles both without a special case.
+function clampToWorkArea(point) {
+  const { workArea } = screen.getDisplayNearestPoint(point);
+  return {
+    x: Math.round(Math.min(Math.max(point.x, workArea.x), workArea.x + workArea.width - OVERLAY_W)),
+    y: Math.round(Math.min(Math.max(point.y, workArea.y), workArea.y + workArea.height - OVERLAY_H)),
+    width: OVERLAY_W, height: OVERLAY_H,
+  };
+}
+
+const pinnedPoint = () => {
+  const pos = settings.overlayPos;
+  return pos && Number.isFinite(pos.x) && Number.isFinite(pos.y) ? pos : null;
+};
+
+// One rectangle is stored, dropped and clamped — the full pill's — and the
+// resting mark is derived from it: centred across it and sharing its bottom
+// edge. So opening grows upward and outward from the mark, which is where you
+// were already looking, and a position you chose while resting is the same
+// position when it opens. Two shapes, one place.
 function positionOverlay(display = cursorDisplay()) {
+  // Put where you put it, and left there. The follow setting is what decides
+  // this, not the presence of a stored point: turning following back on keeps
+  // the old point around but stops consulting it, so switching off again
+  // returns the pill to where you last dropped it.
+  const pinned = !settings.overlayFollow && pinnedPoint();
+  if (pinned) {
+    overlayWin.setBounds(clampToWorkArea(pinned));
+    return;
+  }
+
   const { workArea } = display;
-  const [w, h] = overlayWin.getSize();
   // setBounds rather than setPosition: it pins the DIP size too, so moving to
   // a monitor with a different scale factor can't leave the pill resized.
+  //
+  // The size comes from the constants and never from getSize(). On a display
+  // with a fractional scale factor — 150%, which is the default on most laptop
+  // screens — a DIP size does not survive the trip through physical pixels and
+  // back, and comes back one pixel larger. Feeding that reading into the next
+  // call makes it a loop: the pill grew a pixel per recording, and since it is
+  // centred in a window whose bottom edge is pinned, it climbed half a pixel up
+  // the screen each time until, after a long enough run without restarting, it
+  // was above the top of the screen and the recording appeared to happen with
+  // no pill at all. Asking for the same DIP rect every time makes the rounding
+  // a one-off instead of an accumulation.
   overlayWin.setBounds({
-    x: Math.round(workArea.x + (workArea.width - w) / 2),
-    y: Math.round(workArea.y + workArea.height - h - 48),
-    width: w, height: h,
+    x: Math.round(workArea.x + (workArea.width - OVERLAY_W) / 2),
+    y: Math.round(workArea.y + workArea.height - OVERLAY_H - 48),
+    width: OVERLAY_W, height: OVERLAY_H,
   });
 }
 
@@ -631,6 +842,161 @@ function startFollowingCursor() {
 
 function stopFollowingCursor() {
   if (followTimer) { clearInterval(followTimer); followTimer = null; }
+}
+
+// ----------------------------------------------------------- dragging it --
+
+// The pill is click-through so it never eats a click meant for the window
+// underneath. That is also what stops it being grabbed, so the clicks are given
+// back for exactly as long as the pointer is over it, and taken away again the
+// moment it leaves.
+//
+// The pointer is watched from here rather than from the renderer, and that is
+// the whole design decision. Letting the renderer decide from its own mouse
+// events makes the answer depend on the state it is about to change: taking the
+// clicks back is itself a mouse event, which re-asks the question, which flips
+// it back. Measured on this machine, that loop ran at the speed of IPC and the
+// window flickered between click-through and not for as long as it was visible.
+// Asking the OS where the pointer is has no such feedback — the reading does not
+// change because of what was done with the last one.
+let interactive = false;
+let pointerTimer = null;
+
+function setOverlayInteractive(on) {
+  if (!overlayWin || overlayWin.isDestroyed() || on === interactive) return;
+  interactive = on;
+  trace('overlay interactive', String(on));
+  overlayWin.setIgnoreMouseEvents(!on, { forward: true });
+}
+
+// What counts as being over it. While the pill is up, the whole window: the
+// difference is a ten pixel transparent margin, and paying for it in clicks is
+// cheaper than keeping a copy of the pill's size in step with the stylesheet.
+//
+// While resting, only the mark and a little around it. The window is still the
+// full pill's rectangle, and treating all of that as grabbable would leave an
+// invisible 168 x 80 patch quietly eating clicks meant for whatever is behind
+// a 50 x 10 outline.
+function overlayGrabArea() {
+  const bounds = overlayWin.getBounds();
+  if (!overlayResting) return bounds;
+  return {
+    x: bounds.x + (bounds.width - MARK_W) / 2 - MARK_GRAB,
+    y: bounds.y + bounds.height - MARK_INSET - MARK_H - MARK_GRAB,
+    width: MARK_W + MARK_GRAB * 2,
+    height: MARK_H + MARK_GRAB * 2,
+  };
+}
+
+function pointerOverOverlay() {
+  const point = screen.getCursorScreenPoint();
+  const area = overlayGrabArea();
+  return point.x >= area.x && point.x < area.x + area.width
+    && point.y >= area.y && point.y < area.y + area.height;
+}
+
+// Only while the pill is on screen, which is only while you are dictating.
+function startPointerWatch() {
+  stopPointerWatch();
+  pointerTimer = setInterval(() => {
+    if (!overlayWin || overlayWin.isDestroyed() || drag) return;
+    setOverlayInteractive(pointerOverOverlay());
+  }, 60);
+}
+
+function stopPointerWatch() {
+  if (pointerTimer) { clearInterval(pointerTimer); pointerTimer = null; }
+  setOverlayInteractive(false);
+}
+
+// One way in and one way out for the pill, so the pointer watch cannot outlive
+// what it is watching. `resting` picks which of the two shapes it takes; the
+// renderer is told in the same breath, so the window and its contents never
+// disagree about which one is on screen.
+// The window keeps its shape; only what is drawn inside it changes, so this is
+// one message and nothing has to be sequenced against a repaint.
+function shapeOverlay(resting) {
+  overlayResting = resting;
+  overlayCmd({ cmd: resting ? 'rest' : 'wake' });
+  positionOverlay();
+}
+
+function showOverlay({ resting = false } = {}) {
+  shapeOverlay(resting);
+  overlayWin.showInactive();
+  startPointerWatch();
+  // Whether it follows is one rule, applied whenever it is on screen. A mark
+  // that rested on the monitor you left would be no more use than a pill that
+  // did.
+  if (settings.overlayFollow) startFollowingCursor();
+  else stopFollowingCursor();
+}
+
+function hideOverlay() {
+  stopPointerWatch();
+  stopFollowingCursor();
+  if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide();
+}
+
+// What happens when there is nothing left to show. Kept on screen it shrinks
+// back to the mark; otherwise it goes away. Every path that used to hide the
+// pill comes through here, so the setting is honoured in one place rather than
+// at each of them.
+function restOverlay() {
+  if (settings.overlayAlways) showOverlay({ resting: true });
+  else hideOverlay();
+}
+
+// Where the window was and where the pointer was when the grab began. Every
+// later position is the first plus how far the pointer has moved since, which
+// is why the pill does not jump to centre itself under the cursor.
+let drag = null;
+
+// The pointer's position is read here rather than sent from the renderer. A
+// renderer reports coordinates in its own window's terms and in CSS pixels;
+// `screen` reports the same DIP space `setBounds` accepts, so taking both ends
+// of the sum from the same source removes the question entirely — which
+// matters on this app's usual setup, where the two monitors scale differently.
+function overlayDrag(phase) {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+
+  if (phase === 'start') {
+    const bounds = overlayWin.getBounds();
+    const pointer = screen.getCursorScreenPoint();
+    trace('overlayDrag start', `window ${bounds.x},${bounds.y}`, `pointer ${pointer.x},${pointer.y}`);
+    drag = { x: bounds.x - pointer.x, y: bounds.y - pointer.y };
+    // Following and dragging are the same job done by two things at once.
+    stopFollowingCursor();
+    return;
+  }
+
+  if (!drag) return;
+  const pointer = screen.getCursorScreenPoint();
+  const at = { x: pointer.x + drag.x, y: pointer.y + drag.y };
+
+  if (phase === 'move') {
+    overlayWin.setBounds({ x: Math.round(at.x), y: Math.round(at.y), width: OVERLAY_W, height: OVERLAY_H });
+    return;
+  }
+
+  // Dropping it is the whole gesture: moving the pill by hand is a statement
+  // that you want it there, so it is also what turns the following off. Doing
+  // it here rather than on the first movement means a drag you abandon by
+  // putting it back has still made the same statement, which is the honest
+  // reading of it — and one switch in the App tab puts it back either way.
+  drag = null;
+  trace('overlayDrag end', `dropping at ${Math.round(at.x)},${Math.round(at.y)}`);
+  // One rectangle, whichever shape was on screen when you took hold of it.
+  const dropped = clampToWorkArea({ x: at.x, y: at.y });
+  overlayWin.setBounds(dropped);
+  settings.overlayFollow = false;
+  settings.overlayPos = { x: dropped.x, y: dropped.y };
+  saveSettings();
+  notifySettings({ overlayFollow: false });
+
+  // The pill is normally hidden a moment after the transcript lands; a drag
+  // that outlasts that moment would otherwise leave it stranded on screen.
+  if (appState === 'idle') settleOverlaySoon(600);
 }
 
 // Every command carries the current theme, so the overlay is repainted in the
@@ -825,6 +1191,81 @@ function tidyTranscript(text) {
     .trim();
 }
 
+// ------------------------------------------------------------- dictionary --
+
+// The words the model cannot be expected to know. "Claude" comes back as
+// "clawed", a colleague's name comes back as something else entirely, and no
+// amount of tidying will fix either — the model heard correctly and spelled the
+// only way it could. So you spell it once here, and every transcript from then
+// on says what you meant.
+//
+// Matching ignores case and the replacement is written exactly as you spell it,
+// with one exception: a replacement that has no capitals of its own takes a
+// capital when it lands where the word it replaced had one. That way "iphone"
+// -> "iPhone" keeps its small i at the start of a sentence, while "definately"
+// -> "definitely" still gets its capital back. One rule, both cases, and no
+// per-entry switch to get wrong.
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const WORD_EDGE = /[\p{L}\p{N}]/u;
+
+// An entry may be several words. What separates them in the transcript is
+// however much space the model felt like, and its apostrophe is not necessarily
+// the one you typed, so neither is matched literally.
+function phrasePattern(phrase) {
+  const body = phrase.split(/\s+/).map(escapeRe).join('\\s+').replace(/['’]/g, "['’]");
+  // Boundaries only where the phrase itself ends in a word character: "clawed"
+  // must not fire inside "declawed", but an entry for ".com" has to be free to
+  // sit against the word before it.
+  const open = WORD_EDGE.test(phrase[0]) ? '(?<![\\p{L}\\p{N}])' : '';
+  const close = WORD_EDGE.test(phrase[phrase.length - 1]) ? '(?![\\p{L}\\p{N}])' : '';
+  return open + body + close;
+}
+
+function buildDictionary(entries) {
+  const rules = [];
+  for (const entry of entries || []) {
+    const from = String(entry.from || '').trim();
+    const to = String(entry.to || '').trim();
+    // Both halves or nothing. A row with one side still empty is one you are in
+    // the middle of typing, not an instruction to delete a word.
+    if (!from || !to) continue;
+    // A spelling that starts with punctuation which never takes a space before
+    // it — "dot com" -> ".com", "comma" -> "," — takes the space with it, or
+    // the replacement lands as "example .com". Same rule the tidying applies to
+    // its own edits, rather than a second convention for the same problem.
+    const tight = /^[,.;:!?]/.test(to) ? '\\s*' : '';
+    const source = tight + phrasePattern(from);
+    rules.push({
+      to, source, length: from.length,
+      // Which rule produced a given match: cheaper to ask each rule than to
+      // thread capture groups through the alternation below.
+      matches: new RegExp(`^(?:${source})$`, 'iu'),
+    });
+  }
+  // Longest first. Alternation takes the first branch that matches at a
+  // position, so "clawed code" has to be offered before "clawed" or the shorter
+  // entry would always win and leave "code" behind.
+  return rules.sort((a, b) => b.length - a.length);
+}
+
+// One left-to-right pass, never a pass per rule. Run one rule at a time and
+// "clawed" -> "Claude" followed by "Claude" -> "Claude Code" would fire on the
+// first rule's own output; alternation in a single expression means every
+// stretch of text is rewritten at most once, whatever the rules say about each
+// other, and the result never depends on the order the rows happen to be in.
+function applyDictionary(text, entries) {
+  const rules = buildDictionary(entries);
+  if (!rules.length) return text;
+  const all = new RegExp(rules.map((rule) => `(?:${rule.source})`).join('|'), 'giu');
+  return text.replace(all, (match) => {
+    const rule = rules.find((candidate) => candidate.matches.test(match));
+    if (!rule) return match;
+    // A replacement spelled with capitals of its own is left exactly as typed.
+    return /\p{Lu}/u.test(rule.to) ? rule.to : matchCapital(match, rule.to);
+  });
+}
+
 // --------------------------------------------------------------- keywords --
 
 // Say "Google, what is the capital of Indiana" and the rest of the sentence
@@ -949,7 +1390,15 @@ async function runKeyword(keyword) {
 const sidecar = new Sidecar();
 const ducker = new Ducker();
 let appState = 'idle'; // idle | recording | processing
-let lastText = '';
+
+// A setting the app changed by itself rather than at the window's request. The
+// switch in the settings window has to follow, or it would sit there claiming
+// the pill still follows the mouse after a drag has said otherwise.
+function notifySettings(partial) {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.webContents.send('settings-changed', partial);
+  }
+}
 
 function broadcastState() {
   const payload = {
@@ -968,9 +1417,7 @@ function startRecording() {
   trace('startRecording', 'state=' + appState);
   if (appState !== 'idle') return;
   appState = 'recording';
-  positionOverlay();
-  overlayWin.showInactive();
-  startFollowingCursor();
+  showOverlay({ resting: false });
   ducker.duck();
   overlayCmd({ cmd: 'start', sounds: settings.sounds });
   broadcastState();
@@ -1038,15 +1485,24 @@ function onShortcutAbort() {
   appState = 'idle';
   clearTimeout(hideTimer);
   overlayCmd({ cmd: 'abort' });
-  if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide();
+  restOverlay();
   broadcastState();
 }
 
 let hideTimer = null;
+
+// Never out from under a drag: the pill vanishing mid-gesture would leave the
+// pointer holding nothing, and the position it was being moved to unsaved.
+function settleOverlaySoon(delay) {
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    if (overlayWin && !overlayWin.isDestroyed() && appState === 'idle' && !drag) restOverlay();
+  }, delay);
+}
+
 function finishOverlay(payload, delay) {
   overlayCmd(payload);
-  clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => { if (overlayWin && appState === 'idle') overlayWin.hide(); }, delay);
+  settleOverlaySoon(delay);
 }
 
 // Also unwinds the follow and the ducking: a failed startCapture (mic
@@ -1082,14 +1538,18 @@ async function handleAudio(buffer, duration, cancelled, error) {
       trace('handleAudio abandoned', 'cancelled while transcribing');
       return;
     }
-    const text = settings.tidy ? tidyTranscript(raw) : raw;
+    // Tidy first, dictionary second: tidying collapses "clawed clawed" to one
+    // word before the dictionary ever sees it. And both run before the keyword
+    // match, so a keyword still fires when the model misheard its name.
+    const tidied = settings.tidy ? tidyTranscript(raw) : raw;
+    const text = applyDictionary(tidied, settings.dictionary);
     // A recording that was nothing but "um" tidies down to nothing at all.
     if (!text) throw new Error('No speech recognized.');
-    lastText = text;
-    // Recorded before the keyword runs, so the settings window still shows
-    // what was heard when the words went somewhere other than the clipboard.
+    // Recorded before the keyword runs, so the history still holds what was
+    // heard when the words went somewhere other than the clipboard.
+    const entry = rememberTranscript(text);
     if (settingsWin && !settingsWin.isDestroyed()) {
-      settingsWin.webContents.send('transcription', { text });
+      settingsWin.webContents.send('transcription', entry);
     }
 
     // A keyword takes the place of pasting: the words were an instruction, not
@@ -1229,6 +1689,9 @@ ipcMain.handle('settings:get', () => ({
     launchAtStartup: launchAtStartupEnabled(), model: settings.model,
     theme: settings.theme, duck: settings.duck, duckLevel: settings.duckLevel,
     tidy: settings.tidy, keywords: settings.keywords,
+    dictionary: settings.dictionary,
+    overlayFollow: settings.overlayFollow,
+    overlayAlways: settings.overlayAlways,
     skipChunking: settings.skipChunking,
     keepMicWarm: settings.keepMicWarm,
     restoreClipboard: settings.restoreClipboard,
@@ -1238,7 +1701,8 @@ ipcMain.handle('settings:get', () => ({
   modelState: sidecar.state,
   modelDetail: sidecar.detail,
   modelProgress: sidecar.progress,
-  lastText,
+  history,
+  dataWarning,
   // Lets one settings page describe three operating systems honestly: the
   // labels, the example command and the ducking caveat all come from here
   // rather than being hardcoded to whichever OS this was written on.
@@ -1288,6 +1752,36 @@ ipcMain.handle('settings:set', (_e, partial) => {
       target: String(entry.target || '').trim(),
     }));
   }
+  if (partial.overlayAlways !== undefined) {
+    settings.overlayAlways = Boolean(partial.overlayAlways);
+    // Shown or taken away on the spot: a switch whose effect you only see the
+    // next time you dictate is a switch you cannot tell you have flicked.
+    if (appState === 'idle') restOverlay();
+  }
+  if (partial.overlayFollow !== undefined) {
+    settings.overlayFollow = Boolean(partial.overlayFollow);
+    // Turning following back on drops the pinned point rather than keeping it
+    // in reserve: the switch means "wherever I am", and leaving a stale point
+    // behind would make turning it off again jump the pill somewhere it has not
+    // been for weeks.
+    if (settings.overlayFollow) settings.overlayPos = null;
+    // Move a pill that is on screen right now, so the switch shows its work.
+    if (overlayWin && !overlayWin.isDestroyed() && overlayWin.isVisible()) {
+      positionOverlay();
+      // Not conditional on recording any more: a resting mark follows too.
+      if (settings.overlayFollow) startFollowingCursor();
+      else stopFollowingCursor();
+    }
+  }
+  if (Array.isArray(partial.dictionary)) {
+    // Same rule as the keywords above: a half-filled row is kept, because you
+    // are probably still typing it, and simply never matches until both sides
+    // are there.
+    settings.dictionary = partial.dictionary.slice(0, 256).map((entry) => ({
+      from: String(entry.from || '').trim(),
+      to: String(entry.to || '').trim(),
+    }));
+  }
   if (partial.duck !== undefined) {
     settings.duck = partial.duck;
     // Started eagerly on enable rather than at the first recording: the helper
@@ -1300,6 +1794,17 @@ ipcMain.handle('settings:set', (_e, partial) => {
   if (partial.theme !== undefined) overlayCmd({ cmd: 'theme' });
   saveSettings();
   broadcastState();
+});
+
+// Sent, not invoked: these arrive many times a second during a drag and none of
+// them has an answer worth waiting for.
+ipcMain.on('overlay:drag', (_e, phase) => overlayDrag(phase));
+
+// Emptied on the spot rather than marked for deletion: the point of the button
+// is that the transcripts are gone, so the file goes with them.
+ipcMain.handle('history:clear', () => {
+  history = [];
+  try { fs.unlinkSync(HISTORY_PATH()); } catch { /* nothing written yet */ }
 });
 
 // The clipboard lives in main, so the settings window asks rather than
@@ -1329,6 +1834,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     loadSettings();
+    loadHistory();
     // Hide the dock icon on macOS, before any window exists to put one there.
     platform.onReady?.();
     // Keep the login item in step with the setting: the app directory moves, or

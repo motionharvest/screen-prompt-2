@@ -328,6 +328,45 @@ function stopAnim() {
   ctx2d.clearRect(0, 0, canvas.width, canvas.height);
 }
 
+// --------------------------------------------------------------- dragging --
+
+// The pill can be picked up and put somewhere, and where it is dropped is where
+// it stays. Only the gesture lives here: whether the window is taking clicks at
+// all is decided in main, which watches the pointer against the window's own
+// bounds. Deciding it here instead would mean deciding it from the mouse events
+// that the decision itself changes, and that loop is not stable.
+
+let dragging = false;
+
+// Pointer capture, so a drag that outruns the window — which it will, since the
+// window is only chasing the pointer once per frame — still gets its moves and
+// its release here rather than losing them to whatever is underneath.
+pill.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  dragging = true;
+  document.body.classList.add('dragging');
+  pill.setPointerCapture(e.pointerId);
+  window.api.overlayDrag('start');
+  e.preventDefault();
+});
+
+pill.addEventListener('pointermove', () => {
+  if (dragging) window.api.overlayDrag('move');
+});
+
+// 'pointerup' and 'pointercancel' both end it. A cancel — the pointer captured
+// away by the system — has to leave the pill somewhere rather than dragging for
+// ever, and where it is now is the only honest answer.
+for (const event of ['pointerup', 'pointercancel']) {
+  pill.addEventListener(event, (e) => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove('dragging');
+    try { pill.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    window.api.overlayDrag('end');
+  });
+}
+
 // ---------------------------------------------------------------- control --
 
 function setPill(cls, text) {
@@ -347,6 +386,20 @@ window.api.onOverlayCmd(async (cmd) => {
     // 'theme' carries nothing else — it exists so changing the scheme in
     // settings repaints an overlay that is already on screen.
     case 'theme':
+      break;
+
+    // The two shapes. Main resizes the window; these two decide what is drawn
+    // inside it, and they arrive before the resize so nothing is seen at the
+    // wrong size on the way through.
+    case 'rest':
+      phase = 'idle';
+      stopAnim();
+      setPill('', '');
+      document.body.classList.add('resting');
+      break;
+
+    case 'wake':
+      document.body.classList.remove('resting');
       break;
 
     // Sent at launch and whenever the setting is toggled on. Opening the device

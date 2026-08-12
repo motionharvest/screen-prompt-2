@@ -24,8 +24,9 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node tidy-test.js && node shortcut-test.js && node scripts/test-python.js",
-    "setup": "node scripts/setup.js"
+    "test": "node tidy-test.js && node dictionary-test.js && node history-test.js && node shortcut-test.js && node scripts/test-python.js",
+    "setup": "node scripts/setup.js",
+    "launcher": "node scripts/make-launcher.js"
   },
   "dependencies": {
     "uiohook-napi": "^1.5.4"
