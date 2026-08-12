@@ -55,6 +55,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "Python environment OK." -ForegroundColor Green
 
+Write-Host "== Launcher ==" -ForegroundColor Cyan
+# A double-clickable exe so the app can be started from Explorer or the taskbar
+# rather than from a terminal that then has to stay open. Not fatal if it fails:
+# `npm start` is unaffected, and the reason is printed above.
+node scripts/make-launcher.js
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "The launcher did not build; use 'npm start' instead." -ForegroundColor Yellow
+}
+
 Write-Host ""
-Write-Host "Done. Start the app with: npm start" -ForegroundColor Green
+Write-Host "Done. Start the app by double-clicking 'Screen Prompt 2.exe'," -ForegroundColor Green
+Write-Host "or with: npm start" -ForegroundColor Green
 Write-Host "The Parakeet v2 model (~600 MB quantized) downloads on first launch."

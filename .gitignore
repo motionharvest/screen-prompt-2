@@ -2,6 +2,10 @@ node_modules/
 .venv/
 dist/
 out/
+
+# Built by scripts/make-launcher.js from launcher/launcher.cs and assets/icon.png
+Screen Prompt 2.exe
+launcher/icon.ico
 __pycache__/
 *.pyc
 
