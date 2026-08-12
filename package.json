@@ -1,7 +1,7 @@
 {
   "name": "screen-prompt-2",
   "productName": "Screen Prompt 2",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Push-to-talk dictation: local Parakeet v2 transcription, global shortcut, auto-paste. Windows, macOS and Linux.",
   "main": "main.js",
   "author": "Aaron Sherrill",
