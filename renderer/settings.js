@@ -266,6 +266,8 @@ async function init() {
   $('skip-chunking').checked = state.settings.skipChunking;
   $('keep-mic-warm').checked = state.settings.keepMicWarm;
   $('restore-clipboard').checked = state.settings.restoreClipboard;
+  $('mistral-key').value = state.settings.mistralApiKey || '';
+  showProvider(state.settings.asrProvider);
   $('overlay-follow').checked = state.settings.overlayFollow;
   $('overlay-always').checked = state.settings.overlayAlways;
   showRestoreClipboard(state.settings.output);
@@ -290,6 +292,18 @@ function showRestoreClipboard(output) {
   $('restore-clipboard-row').classList.toggle('off', !on);
 }
 
+function showProvider(provider) {
+  const cloud = provider === 'cloud';
+  document.querySelector(`input[name="asr"][value="${cloud ? 'cloud' : 'local'}"]`).checked = true;
+  $('mistral-key-row').classList.toggle('off', !cloud);
+  $('mistral-key').disabled = !cloud;
+  $('skip-chunking-row').classList.toggle('off', cloud);
+  $('skip-chunking').disabled = cloud;
+  $('tagline').textContent = cloud
+    ? 'Dictate anywhere — Voxtral Mini Transcribe V2 in the cloud.'
+    : 'Dictate anywhere — local Parakeet v2, nothing leaves your machine.';
+}
+
 for (const input of document.querySelectorAll('input[name="output"]')) {
   input.addEventListener('change', () => {
     showRestoreClipboard(input.value);
@@ -299,6 +313,15 @@ for (const input of document.querySelectorAll('input[name="output"]')) {
 for (const input of document.querySelectorAll('input[name="theme"]')) {
   input.addEventListener('change', () => window.api.setSettings({ theme: input.value }));
 }
+for (const input of document.querySelectorAll('input[name="asr"]')) {
+  input.addEventListener('change', () => {
+    showProvider(input.value);
+    window.api.setSettings({ asrProvider: input.value });
+  });
+}
+$('mistral-key').addEventListener('change', (e) => {
+  window.api.setSettings({ mistralApiKey: e.target.value });
+});
 $('tidy').addEventListener('change', (e) => window.api.setSettings({ tidy: e.target.checked }));
 $('skip-chunking').addEventListener('change', (e) => window.api.setSettings({ skipChunking: e.target.checked }));
 $('keep-mic-warm').addEventListener('change', (e) => window.api.setSettings({ keepMicWarm: e.target.checked }));

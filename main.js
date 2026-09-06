@@ -15,6 +15,7 @@ const os = require('os');
 // Everything this app cannot do the same way on every OS lives behind here:
 // the venv layout, the paste keystroke, volume ducking and the login item.
 const platform = require('./platform');
+const { transcriptionStatus, shouldStartSidecar, transcribeCloud } = require('./transcription');
 
 // ---------------------------------------------------------------- settings --
 
@@ -59,6 +60,8 @@ const DEFAULT_SETTINGS = {
   // The cost is that the OS shows the mic as in use whenever the app is running.
   keepMicWarm: true,
   launchAtStartup: false,
+  asrProvider: 'local',
+  mistralApiKey: '',
   model: 'nemo-parakeet-tdt-0.6b-v2',
   quantization: 'int8',      // '' for full precision (bigger download, slower CPU)
 };
@@ -501,6 +504,7 @@ class Sidecar {
 
   start() {
     if (this.proc) return;
+    if (this.state === 'stopped') this.restarts = 0;
     const py = this.pythonPath();
     if (!fs.existsSync(py)) {
       this.state = 'error';
@@ -522,7 +526,9 @@ class Sidecar {
       const line = chunk.toString().trim();
       if (line) console.error('[asr]', line.slice(0, 400));
     });
-    this.proc.on('exit', (code) => {
+    const child = this.proc;
+    child.on('exit', (code) => {
+      if (this.proc !== child) return;
       this.proc = null;
       for (const { reject } of this.pending.values()) reject(new Error('transcriber exited'));
       this.pending.clear();
@@ -574,7 +580,13 @@ class Sidecar {
   }
 
   stop() {
-    if (this.proc) { this.restarts = 99; try { this.proc.kill(); } catch { } this.proc = null; }
+    this.restarts = 99;
+    const child = this.proc;
+    this.proc = null;
+    this.state = 'stopped';
+    this.detail = '';
+    this.progress = null;
+    if (child) { try { child.kill(); } catch { } }
   }
 }
 
@@ -1401,11 +1413,12 @@ function notifySettings(partial) {
 }
 
 function broadcastState() {
+  const status = transcriptionStatus(settings, sidecar);
   const payload = {
     appState,
-    modelState: sidecar.state,
-    modelDetail: sidecar.detail,
-    modelProgress: sidecar.progress,
+    modelState: status.state,
+    modelDetail: status.detail,
+    modelProgress: settings.asrProvider === 'cloud' ? null : sidecar.progress,
     pretty: prettyShortcut(settings.shortcut),
   };
   for (const win of [settingsWin, overlayWin]) {
@@ -1416,6 +1429,12 @@ function broadcastState() {
 function startRecording() {
   trace('startRecording', 'state=' + appState);
   if (appState !== 'idle') return;
+  const status = transcriptionStatus(settings, sidecar);
+  if (status.state === 'error') {
+    showOverlay({ resting: false });
+    finishOverlay({ cmd: 'error', sounds: settings.sounds, message: status.detail }, 2600);
+    return;
+  }
   appState = 'recording';
   showOverlay({ resting: false });
   ducker.duck();
@@ -1533,7 +1552,9 @@ async function handleAudio(buffer, duration, cancelled, error) {
   const generation = cancelGeneration;
   try {
     fs.writeFileSync(wavPath, Buffer.from(buffer));
-    const raw = (await sidecar.transcribe(wavPath, !settings.skipChunking)).trim();
+    const raw = (settings.asrProvider === 'cloud'
+      ? await transcribeCloud(wavPath, String(settings.mistralApiKey || '').trim())
+      : await sidecar.transcribe(wavPath, !settings.skipChunking)).trim();
     if (generation !== cancelGeneration) {
       trace('handleAudio abandoned', 'cancelled while transcribing');
       return;
@@ -1683,7 +1704,9 @@ const capture = new ShortcutCapture((event) => {
   if (event.type === 'done') broadcastState();
 });
 
-ipcMain.handle('settings:get', () => ({
+ipcMain.handle('settings:get', () => {
+  const status = transcriptionStatus(settings, sidecar);
+  return {
   settings: {
     mode: settings.mode, output: settings.output, sounds: settings.sounds,
     launchAtStartup: launchAtStartupEnabled(), model: settings.model,
@@ -1695,12 +1718,14 @@ ipcMain.handle('settings:get', () => ({
     skipChunking: settings.skipChunking,
     keepMicWarm: settings.keepMicWarm,
     restoreClipboard: settings.restoreClipboard,
+    asrProvider: settings.asrProvider === 'cloud' ? 'cloud' : 'local',
+    mistralApiKey: settings.mistralApiKey,
   },
   pretty: prettyShortcut(settings.shortcut),
   appState,
-  modelState: sidecar.state,
-  modelDetail: sidecar.detail,
-  modelProgress: sidecar.progress,
+  modelState: status.state,
+  modelDetail: status.detail,
+  modelProgress: settings.asrProvider === 'cloud' ? null : sidecar.progress,
   history,
   dataWarning,
   // Lets one settings page describe three operating systems honestly: the
@@ -1720,7 +1745,8 @@ ipcMain.handle('settings:get', () => ({
     canRequestPermission: Boolean(platform.requestPermission),
     ...platform.capabilities(),
   },
-}));
+  };
+});
 
 // macOS shows the Accessibility prompt once and never again, so this is wired
 // to a button rather than fired at startup where it would be missed.
@@ -1781,6 +1807,18 @@ ipcMain.handle('settings:set', (_e, partial) => {
       from: String(entry.from || '').trim(),
       to: String(entry.to || '').trim(),
     }));
+  }
+  if (partial.asrProvider !== undefined) {
+    const next = partial.asrProvider === 'cloud' ? 'cloud' : 'local';
+    const prev = settings.asrProvider === 'cloud' ? 'cloud' : 'local';
+    settings.asrProvider = next;
+    if (next !== prev) {
+      if (next === 'cloud') sidecar.stop();
+      else sidecar.start();
+    }
+  }
+  if (partial.mistralApiKey !== undefined) {
+    settings.mistralApiKey = String(partial.mistralApiKey);
   }
   if (partial.duck !== undefined) {
     settings.duck = partial.duck;
@@ -1851,7 +1889,7 @@ if (!gotLock) {
     createSettingsWindow();
     createOverlayWindow();
     createTray();
-    sidecar.start();
+    if (shouldStartSidecar(settings.asrProvider)) sidecar.start();
     if (settings.duck) ducker.start();
 
     uIOhook.on('keydown', (e) => {

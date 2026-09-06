@@ -157,6 +157,18 @@
        hidden, so the option stays discoverable from the mode that lacks it. */
     .switch-row.off { opacity: 0.4; }
 
+    .field { margin-top: 12px; }
+    .field.off { opacity: 0.4; }
+    .field .t { display: block; font-size: 13px; }
+    .field .d { color: #8b8fa0; font-size: 11.5px; margin-top: 2px; }
+    .field input {
+      width: 100%; margin-top: 8px;
+      background: #0e1015; border: 1px solid #2c3140; border-radius: 6px;
+      color: #e6e2da; font-family: inherit; font-size: 12.5px; padding: 7px 9px;
+    }
+    .field input:focus { outline: none; border-color: #d8825a; }
+    .field input:disabled { cursor: default; }
+
     .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .switch-row .t { font-size: 13px; }
     input[type="checkbox"].switch {
@@ -216,7 +228,7 @@
 </head>
 <body>
   <h1>Screen Prompt 2</h1>
-  <div class="sub">Dictate anywhere — local Parakeet v2, nothing leaves your machine.</div>
+  <div class="sub" id="tagline">Dictate anywhere — local Parakeet v2, nothing leaves your machine.</div>
 
   <!-- Above the tabs, and so on every one of them: whether the app works at all
        is not a section of the settings, it is the answer you came for. -->
@@ -329,7 +341,22 @@
 
     <div class="card">
       <h2>Transcribing</h2>
-      <div class="switch-row">
+      <div class="choice">
+        <label><input type="radio" name="asr" value="local">
+          <div class="t">On this device</div>
+          <div class="d">Parakeet v2, nothing leaves the machine</div>
+        </label>
+        <label><input type="radio" name="asr" value="cloud">
+          <div class="t">In the cloud</div>
+          <div class="d">Mistral Voxtral Mini Transcribe V2</div>
+        </label>
+      </div>
+      <div class="field" id="mistral-key-row">
+        <label class="t" for="mistral-key">Mistral API key</label>
+        <div class="d">Used only when transcribing in the cloud</div>
+        <input type="password" id="mistral-key" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="switch-row" style="margin-top: 12px;">
         <div>
           <div class="t">Tidy up the transcript</div>
           <div class="d" style="color:#8b8fa0; font-size:11.5px; margin-top:2px;">
@@ -338,7 +365,7 @@
         </div>
         <input type="checkbox" class="switch" id="tidy">
       </div>
-      <div class="switch-row" style="margin-top: 12px;">
+      <div class="switch-row" style="margin-top: 12px;" id="skip-chunking-row">
         <div>
           <div class="t">Skip chunking (faster)</div>
           <div class="d" style="color:#8b8fa0; font-size:11.5px; margin-top:2px;">
@@ -399,7 +426,8 @@
   <div class="panel" id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden>
     <div class="panel-note">
       Every transcription from the last 30 days, newest first. Click one to copy
-      it. Kept on this machine only, and cleared for good by the button below.
+      it. The list is kept on this machine only, and cleared for good by the
+      button below.
     </div>
 
     <div class="card">

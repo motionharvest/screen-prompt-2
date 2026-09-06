@@ -1,8 +1,10 @@
 # Screen Prompt 2
 
 Push-to-talk dictation for Windows, macOS and Linux. Press a shortcut, talk,
-and the words land in whatever app you were typing in — transcribed locally by
-NVIDIA **Parakeet TDT 0.6B v2**, so nothing leaves your machine.
+and the words land in whatever app you were typing in. Transcription is local
+NVIDIA **Parakeet TDT 0.6B v2** by default, so nothing leaves your machine, or
+Mistral **Voxtral Mini Transcribe V2** in the cloud when you choose that and
+enter a Mistral API key.
 
 A deliberately simple sibling of `screen-prompt`: no gestures, no screenshots,
 no figures — just voice to text.
@@ -45,6 +47,9 @@ no figures — just voice to text.
   your own**, which pins it there for good. It can also be **kept on screen**
   between dictations, resting as a small outline you can grab at any time. See
   [Where the pill sits](#where-the-pill-sits).
+- **Local or cloud** — Parakeet v2 on this machine by default, or Mistral
+  Voxtral Mini Transcribe V2 when you enter an API key. Cloud does not start
+  the local sidecar.
 - **Tidy transcripts** — optional (on by default): drops “um” and “uh”,
   collapses stutters (`I I I'm` → `I'm`, `the the` → `the`) and abandoned
   restarts (`I d I don't know` → `I don't know`), squeezes out the blank runs,
@@ -72,10 +77,11 @@ no figures — just voice to text.
 
 ## Install
 
-Requires **Node 18+** and **Python 3.10+ with `venv` and `pip`** on every
-platform. Transcription runs in a Python sidecar, so Python is not optional —
-and most Linux distributions package `venv` and `pip` separately from the base
-`python3`, which is the usual reason setup stops:
+Requires **Node 18+**. Local transcription also needs **Python 3.10+ with
+`venv` and `pip`**. The local model runs in a Python sidecar, so Python is
+required unless you transcribe only in the cloud — and most Linux distributions
+package `venv` and `pip` separately from the base `python3`, which is the usual
+reason setup stops:
 
 ```sh
 sudo apt install python3-venv python3-pip     # Debian, Ubuntu
@@ -225,7 +231,7 @@ Electron shell + Python sidecar:
 | GUI, tray, state machine | Electron main (`main.js`) | windows, clipboard, settings |
 | Global shortcut | `uiohook-napi` in main | raw key-down/up events, so hold-to-record and lone-modifier shortcuts work — Electron's own `globalShortcut` can't do either |
 | Mic capture, spectrum, tones | overlay renderer (Web Audio) | records straight at 16 kHz mono, `AnalyserNode` drives the waveform line |
-| Transcription | `asr/server.py` (onnx-asr) | Parakeet TDT 0.6B v2 + Silero VAD for recordings over ~25 s (VAD skippable via “Skip chunking” for speed) |
+| Transcription | `asr/server.py` (onnx-asr) or Mistral `/v1/audio/transcriptions` | Local: Parakeet TDT 0.6B v2 + Silero VAD for recordings over ~25 s (VAD skippable via “Skip chunking” for speed). Cloud: Voxtral Mini Transcribe V2. The sidecar starts only in local mode. |
 | Per-OS behaviour | `platform/*.js` | one adapter per platform, see below |
 
 Electron was chosen over Tauri because the audio pipeline (capture, spectrum,
@@ -290,16 +296,16 @@ rather than five bins of related switches:
 | Tab | Governs | Holds |
 | --- | --- | --- |
 | **Recording** | what starts a dictation, and where the words go when it ends | shortcut, toggle or hold, paste / type / copy only, restore the clipboard |
-| **Processing** | what the transcript becomes before it goes anywhere | tidying, chunking, dictionary |
+| **Processing** | what the transcript becomes before it goes anywhere | local or cloud transcription, Mistral API key, tidying, chunking, dictionary |
 | **Keywords** | the words that make a dictation do something instead of becoming text | the keyword list |
 | **History** | what you have already dictated | the last 30 days of transcripts, click to copy |
 | **App** | how the app behaves and announces itself, rather than any one dictation | colours, sounds, keeping the pill on screen and where it sits, keep the mic ready, duck other audio, start at login |
 
 Every setting belongs to exactly one stage of that journey, which is what makes
 the placement decidable rather than a matter of taste; where a tab holds several
-cards they run in the order the work does, so Processing reads tidy →
-dictionary, the same order `handleAudio` applies them, and Keywords is the step
-after both. Keywords earns a tab of its own rather than a card because it is the
+cards they run in the order the work does, so Processing reads provider →
+tidy → dictionary, the same order `handleAudio` applies them, and Keywords is
+the step after both. Keywords earns a tab of its own rather than a card because it is the
 list that grows: every other card is a fixed handful of switches, while that one
 is however many keywords you have come to rely on, two rows each. The status
 line and any platform warnings sit above the tabs, on all of them: whether the
@@ -362,9 +368,10 @@ Clicking one puts it back on the clipboard. It is stored beside the settings —
 are rewritten every time you touch a switch and a month of dictation has no
 business riding along with them.
 
-Nothing leaves the machine, which is the same promise the transcription itself
-makes. What changed is that transcripts now reach the disk rather than living
-only in memory, so **Clear history** deletes the file outright, and the button
+History is stored on this machine only. Local transcription makes the same
+promise for the audio; cloud transcription sends the recording to Mistral.
+What changed is that transcripts now reach the disk rather than living only
+in memory, so **Clear history** deletes the file outright, and the button
 asks a second time before it does.
 
 Retention is enforced on the way in and on the way out: entries older than 30
