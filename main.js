@@ -8,14 +8,22 @@ const {
   app, BrowserWindow, ipcMain, clipboard, screen, Tray, Menu, nativeImage, session, shell,
 } = require('electron');
 const { uIOhook, UiohookKey } = require('uiohook-napi');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
+const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 // Everything this app cannot do the same way on every OS lives behind here:
 // the venv layout, the paste keystroke, volume ducking and the login item.
 const platform = require('./platform');
-const { transcriptionStatus, shouldStartSidecar, transcribeCloud } = require('./transcription');
+const {
+  transcriptionStatus, transcribeCloud, resolveModulateMode, resolveLocalModel,
+  shouldStartPythonSidecar, shouldStartNemotron,
+  isLiveStreaming, openModulateStream, openNemotronStream,
+} = require('./transcription');
+const {
+  countWords, countFixes, addClip, pruneDays, seedFromHistory, summarize,
+} = require('./stats');
 
 // ---------------------------------------------------------------- settings --
 
@@ -61,7 +69,11 @@ const DEFAULT_SETTINGS = {
   keepMicWarm: true,
   launchAtStartup: false,
   asrProvider: 'local',
+  cloudModel: 'mistral',     // 'mistral' | 'modulate' — used only in the cloud
+  modulateMode: 'fast',      // 'fast' | 'streaming' | 'multilingual'
   mistralApiKey: '',
+  modulateApiKey: '',
+  localModel: 'parakeet',    // 'parakeet' | 'nemotron'
   model: 'nemo-parakeet-tdt-0.6b-v2',
   quantization: 'int8',      // '' for full precision (bigger download, slower CPU)
 };
@@ -220,6 +232,52 @@ function launchAtStartupEnabled() {
   } catch {
     return settings.launchAtStartup;
   }
+}
+
+// ------------------------------------------------------------------- stats --
+
+// Daily totals, kept separately from the thirty-day transcript list so the
+// year grid can outlive the words themselves. One compact record per day.
+const STATS_PATH = () => path.join(app.getPath('userData'), 'stats.json');
+let statDays = {};
+
+function loadStats() {
+  try {
+    const raw = readJsonFile(STATS_PATH());
+    statDays = pruneDays(raw && raw.days ? raw.days : {}, Date.now());
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      statDays = seedFromHistory(history, Date.now());
+      if (Object.keys(statDays).length) saveStats();
+      return;
+    }
+    const kept = preserveUnreadable(STATS_PATH(), err);
+    if (kept) {
+      dataWarning += `${dataWarning ? ' ' : ''}Your dictation stats could not be read `
+        + `and have been kept at ${kept}.`;
+    }
+  }
+}
+
+function saveStats() {
+  try {
+    fs.mkdirSync(path.dirname(STATS_PATH()), { recursive: true });
+    fs.writeFileSync(STATS_PATH(), JSON.stringify({ days: statDays }));
+  } catch (err) { console.error('stats save failed:', err); }
+}
+
+function recordClipStats(entry, extra) {
+  statDays = addClip(statDays, {
+    at: entry.at,
+    words: countWords(entry.text),
+    ms: extra.ms || 0,
+    fixes: extra.fixes || 0,
+  });
+  saveStats();
+}
+
+function statsSnapshot() {
+  return summarize(statDays, Date.now());
 }
 
 // ------------------------------------------------------------- key naming --
@@ -590,6 +648,149 @@ class Sidecar {
   }
 }
 
+const NEMOTRON_PORT = 18765;
+
+function findNemoSpeech() {
+  const exe = process.platform === 'win32' ? 'nemo-speech.exe' : 'nemo-speech';
+  const homes = [process.env.HOME, process.env.USERPROFILE].filter(Boolean);
+  const candidates = [];
+  if (process.env.LOCALAPPDATA) {
+    candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'NeMoSpeech', 'bin', exe));
+  }
+  for (const home of homes) {
+    candidates.push(path.join(home, '.local', 'bin', exe));
+  }
+  for (const file of candidates) {
+    if (fs.existsSync(file)) return file;
+  }
+  try {
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const name = process.platform === 'win32' ? 'nemo-speech' : 'nemo-speech';
+    const out = spawnSync(cmd, [name], { encoding: 'utf8', windowsHide: true });
+    const line = String(out.stdout || '').split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    if (line && fs.existsSync(line)) return line;
+  } catch { /* not on PATH */ }
+  return '';
+}
+
+class NemotronSidecar {
+  constructor() {
+    this.proc = null;
+    this.state = 'stopped';
+    this.detail = '';
+    this.progress = null;
+    this.port = NEMOTRON_PORT;
+    this.poll = null;
+  }
+
+  wsUrl() {
+    return `ws://127.0.0.1:${this.port}/v1/audio/transcriptions/realtime`;
+  }
+
+  start() {
+    if (this.proc) return;
+    const bin = findNemoSpeech();
+    if (!bin) {
+      this.state = 'error';
+      this.detail = 'Nemotron needs NVIDIA\'s nemo-speech CLI. Install it from the Processing tab, then restart.';
+      broadcastState();
+      return;
+    }
+    this.state = 'loading';
+    this.detail = 'Loading Nemotron 3.5…';
+    this.progress = null;
+    broadcastState();
+    this.proc = spawn(bin, [
+      'serve',
+      '--host', '127.0.0.1',
+      '--port', String(this.port),
+      '--asr-model', 'nemotron-3.5',
+      '--device', 'cpu',
+      '--no-ui',
+    ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    this.proc.stderr.on('data', (chunk) => {
+      const line = chunk.toString().trim();
+      if (line) console.error('[nemotron]', line.slice(0, 400));
+      if (/SHA-256|size or SHA/i.test(line)) {
+        this.detail = 'Nemotron download was corrupt. Delete %LOCALAPPDATA%\\NeMoSpeech\\models and try again.';
+        broadcastState();
+        return;
+      }
+      if (this.state === 'loading' && /download|pull|fetch|cache/i.test(line)) {
+        this.detail = 'Downloading Nemotron 3.5…';
+        broadcastState();
+      }
+    });
+    this.proc.stdout.on('data', (chunk) => {
+      const line = chunk.toString().trim();
+      if (line) console.error('[nemotron]', line.slice(0, 400));
+    });
+    const child = this.proc;
+    child.on('exit', (code) => {
+      if (this.proc !== child) return;
+      this.proc = null;
+      this.stopPoll();
+      if (this.state !== 'error') {
+        this.state = 'error';
+        this.detail = `Nemotron exited (code ${code}).`;
+      }
+      broadcastState();
+    });
+    this.pollReady();
+  }
+
+  pollReady() {
+    this.stopPoll();
+    const tick = () => {
+      if (!this.proc) return;
+      const req = http.get({
+        host: '127.0.0.1', port: this.port, path: '/ready', timeout: 800,
+      }, (res) => {
+        res.resume();
+        if (res.statusCode === 200 && this.state !== 'ready') {
+          this.state = 'ready';
+          this.detail = '';
+          this.stopPoll();
+          broadcastState();
+        }
+      });
+      req.on('error', () => {});
+      req.on('timeout', () => { req.destroy(); });
+    };
+    this.poll = setInterval(tick, 400);
+    tick();
+  }
+
+  stopPoll() {
+    if (this.poll) { clearInterval(this.poll); this.poll = null; }
+  }
+
+  stop() {
+    this.stopPoll();
+    const child = this.proc;
+    this.proc = null;
+    this.state = 'stopped';
+    this.detail = '';
+    this.progress = null;
+    if (child) { try { child.kill(); } catch { } }
+  }
+}
+
+function activeSidecar() {
+  return shouldStartNemotron(settings) ? nemotron : sidecar;
+}
+
+function startLocalEngine() {
+  if (shouldStartNemotron(settings)) {
+    sidecar.stop();
+    nemotron.start();
+    return;
+  }
+  nemotron.stop();
+  if (shouldStartPythonSidecar(settings)) sidecar.start();
+  else sidecar.stop();
+}
+
 // ---------------------------------------------------------- volume ducking --
 
 // Turns other apps down while you talk, so the mic hears you rather than your
@@ -695,12 +896,31 @@ function createSettingsWindow() {
   const height = Math.min(900, screen.getPrimaryDisplay().workArea.height - 60);
   settingsWin = new BrowserWindow({
     width: 480, height, resizable: false, maximizable: false,
-    title: 'Screen Prompt 2', icon: trayIcon(),
+    title: 'Screen Prompt 2 ' + app.getVersion(), icon: trayIcon(),
     backgroundColor: '#14161b', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   settingsWin.removeMenu();
-  settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
+  settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'), {
+    query: { v: app.getVersion() },
+  });
+  // Key-signup links in Processing. Kept out of this window so a click cannot
+  // replace the settings page with the vendor site.
+  const KEY_LINKS = new Set([
+    'https://console.mistral.ai/api-keys/',
+    'https://platform.modulate.ai/signup-request',
+    'https://github.com/NVIDIA/NeMo-Speech.cpp#installation',
+  ]);
+  const openKeyLink = (url) => { if (KEY_LINKS.has(url)) shell.openExternal(url); };
+  settingsWin.webContents.setWindowOpenHandler(({ url }) => {
+    openKeyLink(url);
+    return { action: 'deny' };
+  });
+  settingsWin.webContents.on('will-navigate', (e, url) => {
+    if (!url.startsWith('https://') && !url.startsWith('http://')) return;
+    e.preventDefault();
+    openKeyLink(url);
+  });
   settingsWin.once('ready-to-show', () => { if (!STARTED_HIDDEN) settingsWin.show(); });
   settingsWin.on('close', (e) => {
     if (!quitting) { e.preventDefault(); settingsWin.hide(); }
@@ -1400,8 +1620,17 @@ async function runKeyword(keyword) {
 // ------------------------------------------------------------ state machine --
 
 const sidecar = new Sidecar();
+const nemotron = new NemotronSidecar();
 const ducker = new Ducker();
 let appState = 'idle'; // idle | recording | processing
+let liveStream = null;
+
+function abortLiveStream() {
+  if (!liveStream) return;
+  const stream = liveStream;
+  liveStream = null;
+  try { stream.abort(); } catch { /* already finished */ }
+}
 
 // A setting the app changed by itself rather than at the window's request. The
 // switch in the settings window has to follow, or it would sit there claiming
@@ -1413,12 +1642,13 @@ function notifySettings(partial) {
 }
 
 function broadcastState() {
-  const status = transcriptionStatus(settings, sidecar);
+  const engine = activeSidecar();
+  const status = transcriptionStatus(settings, engine);
   const payload = {
     appState,
     modelState: status.state,
     modelDetail: status.detail,
-    modelProgress: settings.asrProvider === 'cloud' ? null : sidecar.progress,
+    modelProgress: settings.asrProvider === 'cloud' ? null : engine.progress,
     pretty: prettyShortcut(settings.shortcut),
   };
   for (const win of [settingsWin, overlayWin]) {
@@ -1429,16 +1659,37 @@ function broadcastState() {
 function startRecording() {
   trace('startRecording', 'state=' + appState);
   if (appState !== 'idle') return;
-  const status = transcriptionStatus(settings, sidecar);
+  const status = transcriptionStatus(settings, activeSidecar());
   if (status.state === 'error') {
     showOverlay({ resting: false });
     finishOverlay({ cmd: 'error', sounds: settings.sounds, message: status.detail }, 2600);
     return;
   }
+  abortLiveStream();
+  if (isLiveStreaming(settings)) {
+    if (status.state !== 'ready') {
+      showOverlay({ resting: false });
+      finishOverlay({
+        cmd: 'error', sounds: settings.sounds,
+        message: status.detail || 'The streaming model is still loading.',
+      }, 2600);
+      return;
+    }
+    try {
+      liveStream = shouldStartNemotron(settings)
+        ? openNemotronStream(nemotron.port)
+        : openModulateStream(settings);
+    }
+    catch (err) {
+      showOverlay({ resting: false });
+      finishOverlay({ cmd: 'error', sounds: settings.sounds, message: err.message }, 2600);
+      return;
+    }
+  }
   appState = 'recording';
   showOverlay({ resting: false });
   ducker.duck();
-  overlayCmd({ cmd: 'start', sounds: settings.sounds });
+  overlayCmd({ cmd: 'start', sounds: settings.sounds, liveStream: Boolean(liveStream) });
   broadcastState();
 }
 
@@ -1478,6 +1729,7 @@ function cancelEverything() {
   if (appState === 'idle') return false;
   trace('cancelEverything', 'state=' + appState);
   cancelGeneration += 1;
+  abortLiveStream();
   stopFollowingCursor();
   ducker.restore();
   appState = 'idle';
@@ -1499,6 +1751,7 @@ function cancelEverything() {
 function onShortcutAbort() {
   trace('onShortcutAbort', 'state=' + appState);
   if (appState !== 'recording') return;
+  abortLiveStream();
   stopFollowingCursor();
   ducker.restore();
   appState = 'idle';
@@ -1537,24 +1790,33 @@ async function handleAudio(buffer, duration, cancelled, error) {
   trace('handleAudio', 'state=' + appState, 'duration=' + duration,
     'cancelled=' + cancelled, 'error=' + (error || 'none'));
   if (error) {
+    abortLiveStream();
     backToIdle();
     finishOverlay({ cmd: 'error', sounds: settings.sounds, message: error }, 2600);
     return;
   }
   if (cancelled || duration < 0.35) {
+    abortLiveStream();
     backToIdle();
     finishOverlay({ cmd: 'cancel', sounds: settings.sounds }, 600);
     return;
   }
-  const wavPath = path.join(os.tmpdir(), `screen-prompt-2-${Date.now()}.wav`);
+  const stream = liveStream;
+  const wavPath = stream ? null : path.join(os.tmpdir(), `screen-prompt-2-${Date.now()}.wav`);
   // Captured before the await, compared after it. Escape during "Transcribing…"
   // cannot stop the model, so this is what stops its answer being used.
   const generation = cancelGeneration;
   try {
-    fs.writeFileSync(wavPath, Buffer.from(buffer));
-    const raw = (settings.asrProvider === 'cloud'
-      ? await transcribeCloud(wavPath, String(settings.mistralApiKey || '').trim())
-      : await sidecar.transcribe(wavPath, !settings.skipChunking)).trim();
+    let raw;
+    if (stream) {
+      raw = (await stream.end()).trim();
+      if (liveStream === stream) liveStream = null;
+    } else {
+      fs.writeFileSync(wavPath, Buffer.from(buffer));
+      raw = (settings.asrProvider === 'cloud'
+        ? await transcribeCloud(wavPath, settings)
+        : await sidecar.transcribe(wavPath, !settings.skipChunking)).trim();
+    }
     if (generation !== cancelGeneration) {
       trace('handleAudio abandoned', 'cancelled while transcribing');
       return;
@@ -1569,8 +1831,12 @@ async function handleAudio(buffer, duration, cancelled, error) {
     // Recorded before the keyword runs, so the history still holds what was
     // heard when the words went somewhere other than the clipboard.
     const entry = rememberTranscript(text);
+    recordClipStats(entry, {
+      ms: Math.round(duration * 1000),
+      fixes: countFixes(raw, text),
+    });
     if (settingsWin && !settingsWin.isDestroyed()) {
-      settingsWin.webContents.send('transcription', entry);
+      settingsWin.webContents.send('transcription', { entry, stats: statsSnapshot() });
     }
 
     // A keyword takes the place of pasting: the words were an instruction, not
@@ -1587,13 +1853,15 @@ async function handleAudio(buffer, duration, cancelled, error) {
     backToIdle();
     finishOverlay({ cmd: 'done', sounds: settings.sounds, text, verb }, 1600);
   } catch (err) {
+    if (liveStream === stream) liveStream = null;
     // A transcription that failed *and* was cancelled has nothing to report:
     // the "Cancelled" pill is already up and an error over it would be noise.
     if (generation !== cancelGeneration) return;
+    if (String(err.message) === 'cancelled') return;
     backToIdle();
     finishOverlay({ cmd: 'error', sounds: settings.sounds, message: String(err.message || err) }, 2600);
   } finally {
-    fs.unlink(wavPath, () => { });
+    if (wavPath) fs.unlink(wavPath, () => { });
   }
 }
 
@@ -1640,8 +1908,19 @@ function writeClipboard(saved) {
 async function deliver(text) {
   if (settings.output === 'type') {
     try {
-      await platform.typeText(text);
-      return 'Typed';
+      // Same reason paste waits: a held shortcut chord would mix into the
+      // keystrokes. The low-level hook also has to be down while we inject
+      // Unicode, or those events come back as scan codes and land as junk.
+      await waitForKeysReleased(2000);
+      matcher.enabled = false;
+      try { uIOhook.stop(); } catch { /* already down */ }
+      try {
+        await platform.typeText(text);
+        return 'Typed';
+      } finally {
+        matcher.enabled = true;
+        try { uIOhook.start(); } catch { /* start failed; shortcut is dead until relaunch */ }
+      }
     } catch (err) {
       // Falls back rather than losing the words. Type mode exists to keep the
       // clipboard clean, but a dirty clipboard beats a transcript that went
@@ -1705,7 +1984,8 @@ const capture = new ShortcutCapture((event) => {
 });
 
 ipcMain.handle('settings:get', () => {
-  const status = transcriptionStatus(settings, sidecar);
+  const engine = activeSidecar();
+  const status = transcriptionStatus(settings, engine);
   return {
   settings: {
     mode: settings.mode, output: settings.output, sounds: settings.sounds,
@@ -1719,14 +1999,19 @@ ipcMain.handle('settings:get', () => {
     keepMicWarm: settings.keepMicWarm,
     restoreClipboard: settings.restoreClipboard,
     asrProvider: settings.asrProvider === 'cloud' ? 'cloud' : 'local',
+    localModel: resolveLocalModel(settings),
+    cloudModel: settings.cloudModel === 'modulate' ? 'modulate' : 'mistral',
+    modulateMode: resolveModulateMode(settings),
     mistralApiKey: settings.mistralApiKey,
+    modulateApiKey: settings.modulateApiKey,
   },
   pretty: prettyShortcut(settings.shortcut),
   appState,
   modelState: status.state,
   modelDetail: status.detail,
-  modelProgress: settings.asrProvider === 'cloud' ? null : sidecar.progress,
+  modelProgress: settings.asrProvider === 'cloud' ? null : engine.progress,
   history,
+  stats: statsSnapshot(),
   dataWarning,
   // Lets one settings page describe three operating systems honestly: the
   // labels, the example command and the ducking caveat all come from here
@@ -1809,16 +2094,24 @@ ipcMain.handle('settings:set', (_e, partial) => {
     }));
   }
   if (partial.asrProvider !== undefined) {
-    const next = partial.asrProvider === 'cloud' ? 'cloud' : 'local';
-    const prev = settings.asrProvider === 'cloud' ? 'cloud' : 'local';
-    settings.asrProvider = next;
-    if (next !== prev) {
-      if (next === 'cloud') sidecar.stop();
-      else sidecar.start();
-    }
+    settings.asrProvider = partial.asrProvider === 'cloud' ? 'cloud' : 'local';
+    startLocalEngine();
+  }
+  if (partial.localModel !== undefined) {
+    settings.localModel = partial.localModel === 'nemotron' ? 'nemotron' : 'parakeet';
+    startLocalEngine();
+  }
+  if (partial.cloudModel !== undefined) {
+    settings.cloudModel = partial.cloudModel === 'modulate' ? 'modulate' : 'mistral';
+  }
+  if (partial.modulateMode !== undefined) {
+    settings.modulateMode = resolveModulateMode({ modulateMode: partial.modulateMode });
   }
   if (partial.mistralApiKey !== undefined) {
     settings.mistralApiKey = String(partial.mistralApiKey);
+  }
+  if (partial.modulateApiKey !== undefined) {
+    settings.modulateApiKey = String(partial.modulateApiKey);
   }
   if (partial.duck !== undefined) {
     settings.duck = partial.duck;
@@ -1842,7 +2135,10 @@ ipcMain.on('overlay:drag', (_e, phase) => overlayDrag(phase));
 // is that the transcripts are gone, so the file goes with them.
 ipcMain.handle('history:clear', () => {
   history = [];
+  statDays = {};
   try { fs.unlinkSync(HISTORY_PATH()); } catch { /* nothing written yet */ }
+  try { fs.unlinkSync(STATS_PATH()); } catch { /* nothing written yet */ }
+  return statsSnapshot();
 });
 
 // The clipboard lives in main, so the settings window asks rather than
@@ -1856,6 +2152,11 @@ ipcMain.handle('shortcut:capture:start', () => capture.start());
 ipcMain.handle('shortcut:capture:cancel', () => {
   capture.cancel();
   matcher.enabled = true;
+});
+
+ipcMain.on('overlay:pcm', (_e, chunk) => {
+  if (!liveStream || chunk == null) return;
+  liveStream.send(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 });
 
 ipcMain.on('overlay:audio', (_e, { buffer, duration, cancelled, error }) => {
@@ -1873,6 +2174,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     loadSettings();
     loadHistory();
+    loadStats();
     // Hide the dock icon on macOS, before any window exists to put one there.
     platform.onReady?.();
     // Keep the login item in step with the setting: the app directory moves, or
@@ -1889,7 +2191,7 @@ if (!gotLock) {
     createSettingsWindow();
     createOverlayWindow();
     createTray();
-    if (shouldStartSidecar(settings.asrProvider)) sidecar.start();
+    startLocalEngine();
     if (settings.duck) ducker.start();
 
     uIOhook.on('keydown', (e) => {
@@ -1919,6 +2221,7 @@ if (!gotLock) {
     quitting = true;
     try { uIOhook.stop(); } catch { }
     sidecar.stop();
+    nemotron.stop();
     ducker.stop();
     // Closes the typing helper, if type mode ever started one.
     platform.shutdown?.();

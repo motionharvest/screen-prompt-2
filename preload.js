@@ -21,4 +21,5 @@ contextBridge.exposeInMainWorld('api', {
   overlayDrag: (phase) => ipcRenderer.send('overlay:drag', phase),
   sendAudio: (buffer, duration, cancelled, error) =>
     ipcRenderer.send('overlay:audio', { buffer, duration, cancelled, error }),
+  sendPcm: (buffer) => ipcRenderer.send('overlay:pcm', buffer),
 });

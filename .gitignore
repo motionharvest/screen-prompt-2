@@ -14,3 +14,10 @@ __pycache__/
 *.swp
 .idea/
 .vscode/
+
+# Agent tooling scratch (Visual Agents frame, grok, what, etc.)
+.agent/
+.grok/
+.what/
+.mcp.json
+FRAME.md

@@ -69,6 +69,42 @@ let chunks = [];        // Float32Array pieces at 16 kHz, this recording
 let sampleCount = 0;
 let recording = false;
 let wantRecording = false;
+let liveStream = false; // send PCM to main while recording (Modulate streaming)
+let liveFloats = [];
+let liveCount = 0;
+const LIVE_FLUSH_SAMPLES = 1280; // 80 ms at 16 kHz
+
+function floatToS16le(samples) {
+  const out = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out.buffer;
+}
+
+function pushLive(float32) {
+  if (!liveStream) return;
+  liveFloats.push(float32);
+  liveCount += float32.length;
+  if (liveCount >= LIVE_FLUSH_SAMPLES) flushLive();
+}
+
+function flushLive() {
+  if (!liveCount) return;
+  const samples = new Float32Array(liveCount);
+  let off = 0;
+  for (const c of liveFloats) { samples.set(c, off); off += c.length; }
+  liveFloats = [];
+  liveCount = 0;
+  window.api.sendPcm(floatToS16le(samples));
+}
+
+function resetLive() {
+  liveStream = false;
+  liveFloats = [];
+  liveCount = 0;
+}
 let warm = false;       // keep the device open between recordings
 let opening = null;     // in-flight ensureCapture(), so two starts share one
 let preroll = [];       // rolling pre-PREROLL_MS audio, only while warm + idle
@@ -121,6 +157,7 @@ async function ensureCapture() {
       if (recording) {
         chunks.push(e.data);
         sampleCount += e.data.length;
+        pushLive(e.data);
         return;
       }
       if (!warm) return;
@@ -154,6 +191,10 @@ function beginRecording() {
   preroll = [];
   prerollCount = 0;
   recording = true;
+  if (liveStream) {
+    for (const c of chunks) pushLive(c);
+    flushLive();
+  }
 }
 
 function finishRecording() {
@@ -415,6 +456,9 @@ window.api.onOverlayCmd(async (cmd) => {
       setPill('recording', 'Listening…');
       phase = 'recording';
       wantRecording = true;
+      liveStream = Boolean(cmd.liveStream);
+      liveFloats = [];
+      liveCount = 0;
       startAnim();
       playTones('start', cmd.sounds);
       try {
@@ -425,6 +469,7 @@ window.api.onOverlayCmd(async (cmd) => {
         // A fast toggle can stop the recording while the device is still
         // opening; without this the stream would leak and the mic stay hot.
         if (!wantRecording) {
+          resetLive();
           if (!warm) teardownCapture();
           break;
         }
@@ -433,6 +478,7 @@ window.api.onOverlayCmd(async (cmd) => {
         // Main answers with an error cmd, which shows the message and plays
         // the error tone; nothing to display from here.
         wantRecording = false;
+        resetLive();
         window.api.sendAudio(new ArrayBuffer(0), 0, true,
           `Microphone unavailable: ${err.message}`);
       }
@@ -441,11 +487,14 @@ window.api.onOverlayCmd(async (cmd) => {
     case 'stop': {
       wantRecording = false;
       playTones('stop', cmd.sounds);
+      if (liveStream) flushLive();
+      const streaming = liveStream;
+      resetLive();
       const samples = finishRecording();
       const duration = samples.length / TARGET_RATE;
       phase = 'processing';
       setPill('', 'Transcribing…');
-      const wav = encodeWav(samples, TARGET_RATE);
+      const wav = streaming ? new ArrayBuffer(0) : encodeWav(samples, TARGET_RATE);
       window.api.sendAudio(wav, duration, false);
       break;
     }
@@ -466,6 +515,7 @@ window.api.onOverlayCmd(async (cmd) => {
     // only trace should be that nothing happened at all.
     case 'abort':
       wantRecording = false;
+      resetLive();
       phase = 'idle';
       stopAnim();
       finishRecording();
@@ -478,6 +528,7 @@ window.api.onOverlayCmd(async (cmd) => {
     // the floor rather than sent, which is what makes Escape a real cancel.
     case 'cancel':
       wantRecording = false;
+      resetLive();
       finishRecording();
       phase = 'idle';
       stopAnim();

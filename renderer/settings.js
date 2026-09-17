@@ -267,7 +267,13 @@ async function init() {
   $('keep-mic-warm').checked = state.settings.keepMicWarm;
   $('restore-clipboard').checked = state.settings.restoreClipboard;
   $('mistral-key').value = state.settings.mistralApiKey || '';
-  showProvider(state.settings.asrProvider);
+  $('modulate-key').value = state.settings.modulateApiKey || '';
+  showProvider(
+    state.settings.asrProvider,
+    state.settings.cloudModel,
+    state.settings.modulateMode,
+    state.settings.localModel,
+  );
   $('overlay-follow').checked = state.settings.overlayFollow;
   $('overlay-always').checked = state.settings.overlayAlways;
   showRestoreClipboard(state.settings.output);
@@ -279,6 +285,7 @@ async function init() {
   showDuck(state.settings.duck, levelToReduction(state.settings.duckLevel));
   history = state.history || [];
   renderHistory();
+  renderStats(state.stats);
 }
 
 for (const input of document.querySelectorAll('input[name="mode"]')) {
@@ -292,16 +299,57 @@ function showRestoreClipboard(output) {
   $('restore-clipboard-row').classList.toggle('off', !on);
 }
 
-function showProvider(provider) {
+function resolveMode(modulateMode) {
+  if (modulateMode === 'streaming' || modulateMode === 'multilingual') return modulateMode;
+  return 'fast';
+}
+
+function showProvider(provider, cloudModel, modulateMode, localModel) {
   const cloud = provider === 'cloud';
+  const model = cloudModel === 'modulate' ? 'modulate' : 'mistral';
+  const mode = resolveMode(modulateMode);
+  const local = localModel === 'nemotron' ? 'nemotron' : 'parakeet';
   document.querySelector(`input[name="asr"][value="${cloud ? 'cloud' : 'local'}"]`).checked = true;
-  $('mistral-key-row').classList.toggle('off', !cloud);
-  $('mistral-key').disabled = !cloud;
-  $('skip-chunking-row').classList.toggle('off', cloud);
-  $('skip-chunking').disabled = cloud;
-  $('tagline').textContent = cloud
-    ? 'Dictate anywhere — Voxtral Mini Transcribe V2 in the cloud.'
-    : 'Dictate anywhere — local Parakeet v2, nothing leaves your machine.';
+  document.querySelector(`input[name="cloud-model"][value="${model}"]`).checked = true;
+  document.querySelector(`input[name="modulate-mode"][value="${mode}"]`).checked = true;
+  document.querySelector(`input[name="local-model"][value="${local}"]`).checked = true;
+  $('local-options').classList.toggle('off', cloud);
+  for (const input of $('local-options').querySelectorAll('input')) input.disabled = cloud;
+  $('cloud-options').classList.toggle('off', !cloud);
+  for (const input of $('cloud-options').querySelectorAll('input')) input.disabled = !cloud;
+  $('nemotron-cli-row').hidden = local !== 'nemotron';
+  $('modulate-mode-row').hidden = model !== 'modulate';
+  $('mistral-key-row').hidden = model !== 'mistral';
+  $('modulate-key-row').hidden = model !== 'modulate';
+  const skip = cloud || local === 'nemotron';
+  $('skip-chunking-row').classList.toggle('off', skip);
+  $('skip-chunking').disabled = skip;
+  $('tagline').textContent = !cloud
+    ? (local === 'nemotron'
+      ? 'Dictate anywhere — local Nemotron 3.5 streaming, nothing leaves your machine.'
+      : 'Dictate anywhere — local Parakeet v2, nothing leaves your machine.')
+    : model !== 'modulate'
+      ? 'Dictate anywhere — Voxtral Mini Transcribe V2 in the cloud.'
+      : mode === 'streaming'
+        ? 'Dictate anywhere — Modulate multilingual streaming in the cloud.'
+        : mode === 'multilingual'
+          ? 'Dictate anywhere — Modulate multilingual in the cloud.'
+          : 'Dictate anywhere — Modulate multilingual fast in the cloud.';
+}
+
+function selectedCloudModel() {
+  const picked = document.querySelector('input[name="cloud-model"]:checked');
+  return picked && picked.value === 'modulate' ? 'modulate' : 'mistral';
+}
+
+function selectedModulateMode() {
+  const picked = document.querySelector('input[name="modulate-mode"]:checked');
+  return resolveMode(picked && picked.value);
+}
+
+function selectedLocalModel() {
+  const picked = document.querySelector('input[name="local-model"]:checked');
+  return picked && picked.value === 'nemotron' ? 'nemotron' : 'parakeet';
 }
 
 for (const input of document.querySelectorAll('input[name="output"]')) {
@@ -315,12 +363,33 @@ for (const input of document.querySelectorAll('input[name="theme"]')) {
 }
 for (const input of document.querySelectorAll('input[name="asr"]')) {
   input.addEventListener('change', () => {
-    showProvider(input.value);
+    showProvider(input.value, selectedCloudModel(), selectedModulateMode(), selectedLocalModel());
     window.api.setSettings({ asrProvider: input.value });
+  });
+}
+for (const input of document.querySelectorAll('input[name="local-model"]')) {
+  input.addEventListener('change', () => {
+    showProvider('local', selectedCloudModel(), selectedModulateMode(), input.value);
+    window.api.setSettings({ localModel: input.value });
+  });
+}
+for (const input of document.querySelectorAll('input[name="cloud-model"]')) {
+  input.addEventListener('change', () => {
+    showProvider('cloud', input.value, selectedModulateMode(), selectedLocalModel());
+    window.api.setSettings({ cloudModel: input.value });
+  });
+}
+for (const input of document.querySelectorAll('input[name="modulate-mode"]')) {
+  input.addEventListener('change', () => {
+    showProvider('cloud', 'modulate', input.value, selectedLocalModel());
+    window.api.setSettings({ modulateMode: input.value });
   });
 }
 $('mistral-key').addEventListener('change', (e) => {
   window.api.setSettings({ mistralApiKey: e.target.value });
+});
+$('modulate-key').addEventListener('change', (e) => {
+  window.api.setSettings({ modulateApiKey: e.target.value });
 });
 $('tidy').addEventListener('change', (e) => window.api.setSettings({ tidy: e.target.checked }));
 $('skip-chunking').addEventListener('change', (e) => window.api.setSettings({ skipChunking: e.target.checked }));
@@ -445,6 +514,49 @@ function renderHistory() {
   for (const entry of history) list.appendChild(historyRow(entry));
 }
 
+function fmtNum(n) {
+  return Number(n || 0).toLocaleString();
+}
+
+function renderStats(snap) {
+  const stats = snap || {};
+  $('stat-words').textContent = fmtNum(stats.words);
+  $('stat-fixes').textContent = fmtNum(stats.fixes);
+  $('stat-wpm').textContent = stats.wpm == null ? '—' : fmtNum(stats.wpm);
+  const streak = stats.streak || 0;
+  $('streak-caption').textContent = streak
+    ? (streak === 1 ? '1 day streak' : `${fmtNum(streak)} day streak`)
+    : 'Dictate on consecutive days to build a streak.';
+
+  const months = $('streak-months');
+  const weeksEl = $('streak-weeks');
+  months.textContent = '';
+  weeksEl.textContent = '';
+  for (const week of stats.weeks || []) {
+    const label = document.createElement('span');
+    label.textContent = week.label || '';
+    months.appendChild(label);
+
+    const col = document.createElement('div');
+    col.className = 'streak-week';
+    for (const cell of week.days) {
+      const sq = document.createElement('span');
+      sq.className = `streak-cell l${cell.level}`;
+      if (cell.today) sq.classList.add('today');
+      if (cell.future) sq.classList.add('future');
+      const when = new Date(cell.date + 'T00:00:00');
+      const dateLabel = when.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'short' });
+      const wordsLabel = cell.words ? `${fmtNum(cell.words)} words` : 'no dictation';
+      sq.title = `${dateLabel} — ${wordsLabel}`;
+      sq.setAttribute('aria-label', `${dateLabel}, ${wordsLabel}`);
+      col.appendChild(sq);
+    }
+    weeksEl.appendChild(col);
+  }
+  const scroller = weeksEl.parentElement;
+  if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+}
+
 // Two presses rather than a confirm dialog: a modal would block the whole app,
 // and this says the same thing without one. The offer lapses on its own, so a
 // stray first click cannot leave the button armed.
@@ -464,9 +576,10 @@ $('history-clear').addEventListener('click', async () => {
   clearTimeout(clearTimer);
   button.classList.remove('confirming');
   button.textContent = 'Clear history';
-  await window.api.clearHistory();
+  const cleared = await window.api.clearHistory();
   history = [];
   renderHistory();
+  renderStats(cleared);
 });
 
 // A setting the app changed on its own — so far only the follow switch, which a
@@ -476,10 +589,12 @@ window.api.onSettingsChanged((partial) => {
 });
 
 window.api.onState(showStatus);
-window.api.onTranscription((entry) => {
+window.api.onTranscription((payload) => {
+  const entry = payload && payload.entry ? payload.entry : payload;
   history.unshift(entry);
   $('history-empty').style.display = 'none';
   $('history-list').prepend(historyRow(entry));
+  if (payload && payload.stats) renderStats(payload.stats);
 });
 
 init();

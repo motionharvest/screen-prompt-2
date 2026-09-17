@@ -9,6 +9,7 @@
       background: #14161b; color: #e6e2da;
       font-family: "Segoe UI", system-ui, sans-serif; font-size: 14px;
       padding: 22px 24px; -webkit-user-select: none;
+      overflow-y: auto;
     }
     h1 { font-size: 17px; font-weight: 600; letter-spacing: 0.01em; }
     .sub { color: #8b8fa0; font-size: 12px; margin-top: 2px; }
@@ -168,6 +169,17 @@
     }
     .field input:focus { outline: none; border-color: #d8825a; }
     .field input:disabled { cursor: default; }
+    .field .d a { color: #f0a878; text-decoration: none; }
+    .field .d a:hover { text-decoration: underline; }
+    .field .d a:focus-visible { outline: 2px solid #d8825a; outline-offset: 2px; }
+    #local-options, #cloud-options { margin-top: 12px; }
+    #local-options.off, #cloud-options.off { opacity: 0.4; }
+    #local-options.off .choice label, #cloud-options.off .choice label { cursor: default; }
+    #nemotron-cli-row { margin-top: 8px; }
+    #nemotron-cli-row[hidden] { display: none; }
+    #modulate-mode-row { margin-top: 8px; }
+    #modulate-mode-row[hidden] { display: none; }
+    #modulate-mode-row label { padding: 8px 8px; }
 
     .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .switch-row .t { font-size: 13px; }
@@ -209,6 +221,39 @@
       display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
       overflow: hidden;
     }
+    .stat-row { display: flex; gap: 10px; }
+    .stat-row > div { flex: 1; min-width: 0; }
+    .stat-n {
+      font-size: 22px; font-weight: 600; letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .stat-l { color: #8b8fa0; font-size: 11px; margin-top: 2px; }
+    .streak { margin-top: 14px; }
+    .streak-body { display: flex; gap: 6px; }
+    .streak-dows {
+      display: flex; flex-direction: column; gap: 3px; padding-top: 16px; flex: none;
+    }
+    .streak-dows span {
+      height: 11px; font-size: 9px; line-height: 11px; color: #8b8fa0;
+    }
+    .streak-scroll { overflow-x: auto; flex: 1; min-width: 0; padding-bottom: 4px; }
+    .streak-months {
+      display: flex; gap: 3px; height: 14px; margin-bottom: 4px;
+      font-size: 10px; color: #8b8fa0; line-height: 14px;
+    }
+    .streak-months span { width: 11px; flex: none; overflow: visible; white-space: nowrap; }
+    .streak-weeks { display: flex; gap: 3px; }
+    .streak-week { display: flex; flex-direction: column; gap: 3px; width: 11px; flex: none; }
+    .streak-cell {
+      width: 11px; height: 11px; border-radius: 2px; background: #22262f;
+    }
+    .streak-cell.l1 { background: #3d2a22; }
+    .streak-cell.l2 { background: #6b3d2c; }
+    .streak-cell.l3 { background: #a85a3a; }
+    .streak-cell.l4 { background: #d8825a; }
+    .streak-cell.today { box-shadow: inset 0 0 0 1px #f0a878; }
+    .streak-cell.future { opacity: 0.28; }
+    .streak-caption { color: #8b8fa0; font-size: 11.5px; margin-top: 10px; }
     #history-empty { color: #565b6b; font-size: 12px; margin-bottom: 10px; }
     #history-clear { font-size: 12.5px; padding: 7px 12px; }
     #history-clear.confirming { background: #5c2626; color: #ef9a9a; }
@@ -344,17 +389,63 @@
       <div class="choice">
         <label><input type="radio" name="asr" value="local">
           <div class="t">On this device</div>
-          <div class="d">Parakeet v2, nothing leaves the machine</div>
+          <div class="d">Parakeet v2 or Nemotron 3.5</div>
         </label>
         <label><input type="radio" name="asr" value="cloud">
           <div class="t">In the cloud</div>
-          <div class="d">Mistral Voxtral Mini Transcribe V2</div>
+          <div class="d">Mistral or Modulate, with an API key</div>
         </label>
       </div>
-      <div class="field" id="mistral-key-row">
-        <label class="t" for="mistral-key">Mistral API key</label>
-        <div class="d">Used only when transcribing in the cloud</div>
-        <input type="password" id="mistral-key" autocomplete="off" spellcheck="false">
+      <div id="local-options">
+        <div class="choice">
+          <label><input type="radio" name="local-model" value="parakeet">
+            <div class="t">Parakeet</div>
+            <div class="d">v2, after you stop</div>
+          </label>
+          <label><input type="radio" name="local-model" value="nemotron">
+            <div class="t">Nemotron</div>
+            <div class="d">3.5 streaming, 40 locales</div>
+          </label>
+        </div>
+        <div class="field" id="nemotron-cli-row" hidden>
+          <div class="d"><a href="https://github.com/NVIDIA/NeMo-Speech.cpp#installation" target="_blank" rel="noreferrer">Install nemo-speech</a> with <code>-Backend cpu</code> if the CUDA health check fails</div>
+        </div>
+      </div>
+      <div id="cloud-options">
+        <div class="choice">
+          <label><input type="radio" name="cloud-model" value="mistral">
+            <div class="t">Mistral</div>
+            <div class="d">Voxtral Mini Transcribe V2</div>
+          </label>
+          <label><input type="radio" name="cloud-model" value="modulate">
+            <div class="t">Modulate</div>
+            <div class="d">Fast, streaming, or full</div>
+          </label>
+        </div>
+        <div class="choice" id="modulate-mode-row">
+          <label><input type="radio" name="modulate-mode" value="fast">
+            <div class="t">Fast</div>
+            <div class="d">Upload when you stop</div>
+          </label>
+          <label><input type="radio" name="modulate-mode" value="streaming">
+            <div class="t">Streaming</div>
+            <div class="d">While you talk</div>
+          </label>
+          <label><input type="radio" name="modulate-mode" value="multilingual">
+            <div class="t">Full</div>
+            <div class="d">100 languages</div>
+          </label>
+        </div>
+        <div class="field" id="mistral-key-row">
+          <label class="t" for="mistral-key">Mistral API key</label>
+          <div class="d"><a href="https://console.mistral.ai/api-keys/" target="_blank" rel="noreferrer">Get a key at console.mistral.ai</a></div>
+          <input type="password" id="mistral-key" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field" id="modulate-key-row">
+          <label class="t" for="modulate-key">Modulate API key</label>
+          <div class="d"><a href="https://platform.modulate.ai/signup-request" target="_blank" rel="noreferrer">Get a key at platform.modulate.ai</a></div>
+          <input type="password" id="modulate-key" autocomplete="off" spellcheck="false">
+        </div>
       </div>
       <div class="switch-row" style="margin-top: 12px;">
         <div>
@@ -425,9 +516,39 @@
        of them back on the clipboard. -->
   <div class="panel" id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden>
     <div class="panel-note">
-      Every transcription from the last 30 days, newest first. Click one to copy
-      it. The list is kept on this machine only, and cleared for good by the
-      button below.
+      How much you have dictated, a year of days, then the last 30 days of
+      transcripts. Click a transcript to copy it. Everything here stays on this
+      machine, and the button below clears it for good.
+    </div>
+
+    <div class="card">
+      <h2>Use</h2>
+      <div class="stat-row">
+        <div>
+          <div class="stat-n" id="stat-words">0</div>
+          <div class="stat-l">Words dictated</div>
+        </div>
+        <div>
+          <div class="stat-n" id="stat-wpm">—</div>
+          <div class="stat-l">Words per minute</div>
+        </div>
+        <div>
+          <div class="stat-n" id="stat-fixes">0</div>
+          <div class="stat-l">Fixes</div>
+        </div>
+      </div>
+      <div class="streak">
+        <div class="streak-body">
+          <div class="streak-dows" aria-hidden="true">
+            <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+          </div>
+          <div class="streak-scroll">
+            <div class="streak-months" id="streak-months"></div>
+            <div class="streak-weeks" id="streak-weeks" role="img" aria-label="Dictation by day, Sunday to Saturday, months across"></div>
+          </div>
+        </div>
+        <div class="streak-caption" id="streak-caption"></div>
+      </div>
     </div>
 
     <div class="card">

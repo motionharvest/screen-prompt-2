@@ -3,8 +3,10 @@
 Push-to-talk dictation for Windows, macOS and Linux. Press a shortcut, talk,
 and the words land in whatever app you were typing in. Transcription is local
 NVIDIA **Parakeet TDT 0.6B v2** by default, so nothing leaves your machine, or
-Mistral **Voxtral Mini Transcribe V2** in the cloud when you choose that and
-enter a Mistral API key.
+NVIDIA **Nemotron 3.5 ASR Streaming 0.6B** locally (needs the `nemo-speech`
+CLI), or a cloud model when you choose that and enter its API key: Mistral
+**Voxtral Mini Transcribe V2**, or Modulate **multilingual** (fast by default,
+or streaming / full).
 
 A deliberately simple sibling of `screen-prompt`: no gestures, no screenshots,
 no figures — just voice to text.
@@ -47,9 +49,15 @@ no figures — just voice to text.
   your own**, which pins it there for good. It can also be **kept on screen**
   between dictations, resting as a small outline you can grab at any time. See
   [Where the pill sits](#where-the-pill-sits).
-- **Local or cloud** — Parakeet v2 on this machine by default, or Mistral
-  Voxtral Mini Transcribe V2 when you enter an API key. Cloud does not start
-  the local sidecar.
+- **Local or cloud** — Parakeet v2 on this machine by default, or Nemotron 3.5
+  streaming locally (same live-PCM path as Modulate streaming; needs NVIDIA's
+  [`nemo-speech`](https://github.com/NVIDIA/NeMo-Speech.cpp#installation) CLI),
+  or a cloud model when you enter its API key: Mistral Voxtral Mini Transcribe
+  V2, or Modulate multilingual (fast, streaming, or full). Cloud does not start
+  the local sidecar. Processing links to
+  [console.mistral.ai](https://console.mistral.ai/api-keys/) and
+  [platform.modulate.ai](https://platform.modulate.ai/signup-request) for a
+  key.
 - **Tidy transcripts** — optional (on by default): drops “um” and “uh”,
   collapses stutters (`I I I'm` → `I'm`, `the the` → `the`) and abandoned
   restarts (`I d I don't know` → `I don't know`), squeezes out the blank runs,
@@ -111,6 +119,27 @@ npm install
 npm run setup     # creates .venv and installs onnx-asr
 npm start
 ```
+
+Nemotron 3.5 streaming is a second local model. It is not in the Python
+sidecar: it needs NVIDIA's [`nemo-speech`](https://github.com/NVIDIA/NeMo-Speech.cpp)
+CLI. The installer picks CUDA when `nvidia-smi` sees a GPU, then fails its
+health check if CUDA cannot initialize (common on laptops). Install the CPU
+build instead:
+
+```powershell
+irm https://github.com/NVIDIA/NeMo-Speech.cpp/raw/main/scripts/install.ps1 -OutFile $env:TEMP\install-nemo-speech.ps1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\install-nemo-speech.ps1 -Backend cpu
+```
+
+On Linux or macOS:
+
+```sh
+curl -fsSL https://github.com/NVIDIA/NeMo-Speech.cpp/raw/main/scripts/install.sh | sh -s -- --backend cpu
+```
+
+Open a new terminal after that, quit the tray app, and pick Nemotron on the
+Processing tab. First use downloads the GGUF. Screen Prompt 2 starts
+`nemo-speech serve` with `--device cpu`.
 
 `npm run setup` runs `install.ps1` on Windows and `install.sh` elsewhere. The
 quantized model (~600 MB) downloads into the Hugging Face cache on first
@@ -231,7 +260,7 @@ Electron shell + Python sidecar:
 | GUI, tray, state machine | Electron main (`main.js`) | windows, clipboard, settings |
 | Global shortcut | `uiohook-napi` in main | raw key-down/up events, so hold-to-record and lone-modifier shortcuts work — Electron's own `globalShortcut` can't do either |
 | Mic capture, spectrum, tones | overlay renderer (Web Audio) | records straight at 16 kHz mono, `AnalyserNode` drives the waveform line |
-| Transcription | `asr/server.py` (onnx-asr) or Mistral `/v1/audio/transcriptions` | Local: Parakeet TDT 0.6B v2 + Silero VAD for recordings over ~25 s (VAD skippable via “Skip chunking” for speed). Cloud: Voxtral Mini Transcribe V2. The sidecar starts only in local mode. |
+| Transcription | `asr/server.py` (onnx-asr), `nemo-speech serve`, or a cloud POST | Local Parakeet TDT 0.6B v2 + Silero VAD for recordings over ~25 s (VAD skippable via “Skip chunking” for speed). Local Nemotron 3.5 ASR Streaming 0.6B via NVIDIA's `nemo-speech` CLI (`ws://127.0.0.1:18765/v1/audio/transcriptions/realtime`, 16 kHz PCM while you talk). Cloud: Mistral Voxtral Mini Transcribe V2 (`/v1/audio/transcriptions`) or Modulate multilingual — fast batch (`/api/velma-2-stt-batch-multilingual-vfast`, the default), live streaming (`/api/velma-2-stt-streaming-multilingual-vfast`), or full batch (`/api/velma-2-stt-batch`). Python sidecar starts only for local Parakeet. |
 | Per-OS behaviour | `platform/*.js` | one adapter per platform, see below |
 
 Electron was chosen over Tauri because the audio pipeline (capture, spectrum,
@@ -272,8 +301,8 @@ Stored next to the app's user data:
 | macOS | `~/Library/Application Support/Screen Prompt 2/settings.json` |
 | Linux | `~/.config/Screen Prompt 2/settings.json` |
 
-The transcript history is `history.json` in the same directory. See
-[History](#history).
+The transcript history is `history.json` in the same directory, and the year of
+daily totals is `stats.json`. See [History](#history).
 
 Both files are protected against the one accident that loses them. A UTF-8
 byte-order mark is stripped on read, because `JSON.parse` rejects a file that
@@ -296,9 +325,9 @@ rather than five bins of related switches:
 | Tab | Governs | Holds |
 | --- | --- | --- |
 | **Recording** | what starts a dictation, and where the words go when it ends | shortcut, toggle or hold, paste / type / copy only, restore the clipboard |
-| **Processing** | what the transcript becomes before it goes anywhere | local or cloud transcription, Mistral API key, tidying, chunking, dictionary |
+| **Processing** | what the transcript becomes before it goes anywhere | local or cloud transcription, Parakeet or Nemotron, cloud model, Modulate mode, API key, tidying, chunking, dictionary |
 | **Keywords** | the words that make a dictation do something instead of becoming text | the keyword list |
-| **History** | what you have already dictated | the last 30 days of transcripts, click to copy |
+| **History** | what you have already dictated | words, words per minute, tidy/dictionary fixes, a year of days, the last 30 days of transcripts |
 | **App** | how the app behaves and announces itself, rather than any one dictation | colours, sounds, keeping the pill on screen and where it sits, keep the mic ready, duck other audio, start at login |
 
 Every setting belongs to exactly one stage of that journey, which is what makes
@@ -363,16 +392,21 @@ unplugged or rearranged, so it cannot strand itself off the desktop.
 ## History
 
 Every transcript is kept for **30 days**, newest first, on the History tab.
-Clicking one puts it back on the clipboard. It is stored beside the settings —
-`history.json` in the same directory — rather than inside them, because settings
-are rewritten every time you touch a switch and a month of dictation has no
-business riding along with them.
+Clicking one puts it back on the clipboard. Above the list: how many words you
+have dictated, words per minute, and how many tidy/dictionary fixes landed
+between what the model said and what was delivered. A year of days sits under
+that — Sunday to Saturday down, months across — darker amber for a heavier day.
+
+Transcripts are `history.json` beside the settings; daily totals are
+`stats.json`, which outlive the thirty-day list so the grid does not go blank
+when a transcript ages out. Settings are rewritten every time you touch a
+switch and a month of dictation has no business riding along with them.
 
 History is stored on this machine only. Local transcription makes the same
-promise for the audio; cloud transcription sends the recording to Mistral.
-What changed is that transcripts now reach the disk rather than living only
-in memory, so **Clear history** deletes the file outright, and the button
-asks a second time before it does.
+promise for the audio; cloud transcription sends the recording to Mistral or
+Modulate, depending on the model you picked.
+**Clear history** deletes both files outright, and the button asks a second
+time before it does.
 
 Retention is enforced on the way in and on the way out: entries older than 30
 days are dropped whenever the file is read and whenever a transcript is added,
