@@ -319,13 +319,13 @@ Everything has a GUI control except `model` and `quantization` (set
 `"quantization": ""` for the full-precision model — bigger download, slightly
 better accuracy).
 
-The settings window is five tabs, and they are the journey one dictation takes
-rather than five bins of related switches:
+The settings window is a sidebar of five sections, and they are the journey one
+dictation takes rather than five bins of related switches:
 
 | Tab | Governs | Holds |
 | --- | --- | --- |
 | **Recording** | what starts a dictation, and where the words go when it ends | shortcut, toggle or hold, paste / type / copy only, restore the clipboard |
-| **Processing** | what the transcript becomes before it goes anywhere | local or cloud transcription, Parakeet or Nemotron, cloud model, Modulate mode, API key, tidying, chunking, dictionary |
+| **Processing** | what the transcript becomes before it goes anywhere | one engine picker (Parakeet or Nemotron on this device, Mistral or Modulate in the cloud) with that engine's own controls beneath it: chunking, the install note, the API key, the Modulate mode; then tidying and the dictionary |
 | **Keywords** | the words that make a dictation do something instead of becoming text | the keyword list |
 | **History** | what you have already dictated | words, words per minute, tidy/dictionary fixes, a year of days, the last 30 days of transcripts |
 | **App** | how the app behaves and announces itself, rather than any one dictation | colours, sounds, keeping the pill on screen and where it sits, keep the mic ready, duck other audio, start at login |
@@ -336,9 +336,12 @@ cards they run in the order the work does, so Processing reads provider →
 tidy → dictionary, the same order `handleAudio` applies them, and Keywords is
 the step after both. Keywords earns a tab of its own rather than a card because it is the
 list that grows: every other card is a fixed handful of switches, while that one
-is however many keywords you have come to rely on, two rows each. The status
-line and any platform warnings sit above the tabs, on all of them: whether the
-app works at all is not a section of the settings.
+is however many keywords you have come to rely on. The status line sits in the
+sidebar under the app's name, on every section, and any platform warnings sit
+at the top of the content: whether the app works at all is not a section of
+the settings. The engine's own state is repeated inside the Processing card,
+next to the choice that governs it. The colour scheme chosen on the App
+section restyles this window as well as the pill.
 
 **Start at login** points the login item at this checkout, so moving or
 renaming the directory breaks the entry — toggle it off and on again after a
@@ -487,7 +490,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<this directory>\launch
 <this directory>/launch-app.sh %s
 ```
 
-The settings window shows the right one for your machine. Both take the spoken
+The settings window adds the right one for your machine with **Add the app
+launcher** on the Keywords tab, and **How a command runs** there explains the
+rules above. Both scripts take the spoken
 name as bound arguments rather than interpolating it into a command string, so
 nothing you say is ever parsed as shell. Both match on a partial name with the
 shortest match winning, so “Launch Word” prefers Word over WordPad. Prefer

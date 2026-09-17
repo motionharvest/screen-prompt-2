@@ -887,17 +887,16 @@ let overlayWin = null;
 let tray = null;
 let quitting = false;
 
+const SETTINGS_BG = { default: '#14161b', synthwave: '#130a24' };
+
 function createSettingsWindow() {
-  // Comfortably taller than any one tab, and capped to the work area so the
-  // last card is still reachable on a short screen. The headroom is for the two
-  // tabs that grow — Keywords and the dictionary — since every row it can show
-  // is a row you do not have to scroll to; the window no longer has to fit
-  // every setting at once.
-  const height = Math.min(900, screen.getPrimaryDisplay().workArea.height - 60);
+  const area = screen.getPrimaryDisplay().workArea;
   settingsWin = new BrowserWindow({
-    width: 480, height, resizable: false, maximizable: false,
+    width: Math.min(940, area.width - 40),
+    height: Math.min(640, area.height - 60),
+    minWidth: 720, minHeight: 480,
     title: 'Screen Prompt 2 ' + app.getVersion(), icon: trayIcon(),
-    backgroundColor: '#14161b', show: false,
+    backgroundColor: SETTINGS_BG[settings.theme] || SETTINGS_BG.default, show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   settingsWin.removeMenu();
@@ -1569,7 +1568,13 @@ function launch(argv, onLateFailure) {
     let stderr = '';
 
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-    child.on('error', (err) => { if (!settled) { settled = true; reject(err); } });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err.code === 'ENOENT'
+        ? new Error(`Could not find ${argv[0]}. Give the program's full path.`)
+        : err);
+    });
     child.on('exit', (code) => {
       if (!settled) {
         settled = true;
@@ -2095,14 +2100,15 @@ ipcMain.handle('settings:set', (_e, partial) => {
   }
   if (partial.asrProvider !== undefined) {
     settings.asrProvider = partial.asrProvider === 'cloud' ? 'cloud' : 'local';
-    startLocalEngine();
   }
   if (partial.localModel !== undefined) {
     settings.localModel = partial.localModel === 'nemotron' ? 'nemotron' : 'parakeet';
-    startLocalEngine();
   }
   if (partial.cloudModel !== undefined) {
     settings.cloudModel = partial.cloudModel === 'modulate' ? 'modulate' : 'mistral';
+  }
+  if (partial.asrProvider !== undefined || partial.localModel !== undefined) {
+    startLocalEngine();
   }
   if (partial.modulateMode !== undefined) {
     settings.modulateMode = resolveModulateMode({ modulateMode: partial.modulateMode });

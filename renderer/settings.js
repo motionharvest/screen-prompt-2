@@ -21,13 +21,16 @@ function selectTab(chosen) {
     $(tab.getAttribute('aria-controls')).hidden = !on;
   }
   // A short panel after a long one would otherwise open scrolled halfway down.
-  window.scrollTo(0, 0);
+  document.querySelector('.content').scrollTo(0, 0);
 }
 
 tabs.forEach((tab, index) => {
   tab.addEventListener('click', () => selectTab(tab));
   tab.addEventListener('keydown', (e) => {
-    const step = { ArrowRight: 1, ArrowLeft: -1, Home: -index, End: tabs.length - 1 - index }[e.key];
+    const step = {
+      ArrowDown: 1, ArrowUp: -1, ArrowRight: 1, ArrowLeft: -1,
+      Home: -index, End: tabs.length - 1 - index,
+    }[e.key];
     if (step === undefined) return;
     e.preventDefault();
     const next = tabs[(index + step + tabs.length) % tabs.length];
@@ -48,27 +51,38 @@ function showProgress(p) {
   $('progress-pct').textContent =
     `${pct.toFixed(0)}% — ${(p.done / MB).toFixed(0)} / ${(p.total / MB).toFixed(0)} MB`;
   $('progress-speed').textContent = p.speed > 0 ? `${(p.speed / MB).toFixed(1)} MB/s` : '';
-  return `Downloading Parakeet v2…`;
+  return `Downloading ${ENGINE_NAME[selectedEngine()]}…`;
 }
 
-function showStatus({ appState, modelState, modelDetail, modelProgress, pretty }) {
-  if (pretty) {
-    currentPretty = pretty;
-    if (!capturing) $('shortcut-display').textContent = pretty;
+function engineStatus({ modelState, modelDetail, modelProgress }) {
+  const downloadText = modelState === 'loading' ? showProgress(modelProgress) : showProgress(null);
+  if (modelState === 'ready') {
+    return { cls: 'ready', text: `Ready — press ${currentPretty} and talk` };
   }
+  if (modelState === 'error') {
+    return { cls: 'error', text: modelDetail || 'Transcriber failed to start' };
+  }
+  return { cls: '', text: downloadText || modelDetail || 'Loading model…' };
+}
+
+function showStatus(state) {
+  if (state.pretty) {
+    currentPretty = state.pretty;
+    if (!capturing) $('shortcut-display').textContent = state.pretty;
+  }
+  const engine = engineStatus(state);
+  $('engine-dot').className = `dot ${engine.cls}`;
+  $('engine-text').textContent = engine.text.replace(/ in Processing$/, ' below');
+
   const dot = $('status-dot');
   const text = $('status-text');
-  const downloadText = modelState === 'loading' ? showProgress(modelProgress) : showProgress(null);
-  if (appState === 'recording') {
-    dot.className = 'recording'; text.textContent = 'Recording…';
-  } else if (appState === 'processing') {
-    dot.className = 'recording'; text.textContent = 'Transcribing…';
-  } else if (modelState === 'ready') {
-    dot.className = 'ready'; text.textContent = `Ready — press ${currentPretty} and talk`;
-  } else if (modelState === 'error') {
-    dot.className = 'error'; text.textContent = modelDetail || 'Transcriber failed to start';
+  text.classList.toggle('quiet', engine.cls === 'ready');
+  if (state.appState === 'recording') {
+    dot.className = 'dot recording'; text.textContent = 'Recording…';
+  } else if (state.appState === 'processing') {
+    dot.className = 'dot recording'; text.textContent = 'Transcribing…';
   } else {
-    dot.className = ''; text.textContent = downloadText || modelDetail || 'Loading model…';
+    dot.className = `dot ${engine.cls}`; text.textContent = engine.text;
   }
 }
 
@@ -94,6 +108,7 @@ const PLACEHOLDER = {
   url: 'https://www.google.com/search?q=%s',
   command: 'notepad.exe %s',
 };
+let launchAppTarget = '';
 
 function saveKeywords() {
   window.api.setSettings({ keywords });
@@ -108,15 +123,13 @@ function renderKeywords() {
     const row = document.createElement('div');
     row.className = 'kw';
     row.innerHTML = `
-      <div class="kw-top">
-        <input type="text" class="kw-word" placeholder="Google" spellcheck="false">
-        <select class="kw-type">
-          <option value="url">Open a URL</option>
-          <option value="command">Run a command</option>
-        </select>
-        <button class="kw-del" title="Remove">&times;</button>
-      </div>
+      <input type="text" class="kw-word" placeholder="Google" spellcheck="false">
+      <select class="kw-type">
+        <option value="url">Open a URL</option>
+        <option value="command">Run a command</option>
+      </select>
       <input type="text" class="kw-target" spellcheck="false">
+      <button class="kw-del" title="Remove">&times;</button>
     `;
     // Values are assigned as properties rather than interpolated into the
     // markup above, so a keyword containing quotes cannot break out of it.
@@ -144,11 +157,21 @@ function renderKeywords() {
     });
     list.appendChild(row);
   });
+  $('launch-add').disabled = !launchAppTarget
+    || keywords.some((k) => k.type === 'command' && k.target === launchAppTarget);
 }
 
 $('keyword-add').addEventListener('click', () => {
   keywords.push({ word: '', type: 'url', target: '' });
   renderKeywords();
+  $('keyword-list').lastElementChild.querySelector('.kw-word').focus();
+});
+
+$('launch-add').addEventListener('click', () => {
+  if ($('launch-add').disabled) return;
+  keywords.push({ word: 'Launch', type: 'command', target: launchAppTarget });
+  renderKeywords();
+  saveKeywords();
   $('keyword-list').lastElementChild.querySelector('.kw-word').focus();
 });
 
@@ -209,6 +232,8 @@ function applyPlatform(info) {
 
   $('startup-label').textContent = info.autostartLabel;
   PLACEHOLDER.command = info.commandExample;
+  $('cmd-example').textContent = info.commandExample;
+  launchAppTarget = info.launchAppTarget || '';
 
   const duckNote = $('duck-note');
   if (info.ducking.note) {
@@ -260,6 +285,8 @@ async function init() {
   document.querySelector(`input[name="mode"][value="${state.settings.mode}"]`).checked = true;
   document.querySelector(`input[name="output"][value="${state.settings.output}"]`).checked = true;
   document.querySelector(`input[name="theme"][value="${state.settings.theme}"]`).checked = true;
+  applyTheme(state.settings.theme);
+  $('version').textContent = `Version ${new URLSearchParams(location.search).get('v') || ''}`.trim();
   $('sounds').checked = state.settings.sounds;
   $('startup').checked = state.settings.launchAtStartup;
   $('tidy').checked = state.settings.tidy;
@@ -268,12 +295,7 @@ async function init() {
   $('restore-clipboard').checked = state.settings.restoreClipboard;
   $('mistral-key').value = state.settings.mistralApiKey || '';
   $('modulate-key').value = state.settings.modulateApiKey || '';
-  showProvider(
-    state.settings.asrProvider,
-    state.settings.cloudModel,
-    state.settings.modulateMode,
-    state.settings.localModel,
-  );
+  showEngine(engineOf(state.settings), state.settings.modulateMode);
   $('overlay-follow').checked = state.settings.overlayFollow;
   $('overlay-always').checked = state.settings.overlayAlways;
   showRestoreClipboard(state.settings.output);
@@ -304,42 +326,26 @@ function resolveMode(modulateMode) {
   return 'fast';
 }
 
-function showProvider(provider, cloudModel, modulateMode, localModel) {
-  const cloud = provider === 'cloud';
-  const model = cloudModel === 'modulate' ? 'modulate' : 'mistral';
-  const mode = resolveMode(modulateMode);
-  const local = localModel === 'nemotron' ? 'nemotron' : 'parakeet';
-  document.querySelector(`input[name="asr"][value="${cloud ? 'cloud' : 'local'}"]`).checked = true;
-  document.querySelector(`input[name="cloud-model"][value="${model}"]`).checked = true;
-  document.querySelector(`input[name="modulate-mode"][value="${mode}"]`).checked = true;
-  document.querySelector(`input[name="local-model"][value="${local}"]`).checked = true;
-  $('local-options').classList.toggle('off', cloud);
-  for (const input of $('local-options').querySelectorAll('input')) input.disabled = cloud;
-  $('cloud-options').classList.toggle('off', !cloud);
-  for (const input of $('cloud-options').querySelectorAll('input')) input.disabled = !cloud;
-  $('nemotron-cli-row').hidden = local !== 'nemotron';
-  $('modulate-mode-row').hidden = model !== 'modulate';
-  $('mistral-key-row').hidden = model !== 'mistral';
-  $('modulate-key-row').hidden = model !== 'modulate';
-  const skip = cloud || local === 'nemotron';
-  $('skip-chunking-row').classList.toggle('off', skip);
-  $('skip-chunking').disabled = skip;
-  $('tagline').textContent = !cloud
-    ? (local === 'nemotron'
-      ? 'Dictate anywhere — local Nemotron 3.5 streaming, nothing leaves your machine.'
-      : 'Dictate anywhere — local Parakeet v2, nothing leaves your machine.')
-    : model !== 'modulate'
-      ? 'Dictate anywhere — Voxtral Mini Transcribe V2 in the cloud.'
-      : mode === 'streaming'
-        ? 'Dictate anywhere — Modulate multilingual streaming in the cloud.'
-        : mode === 'multilingual'
-          ? 'Dictate anywhere — Modulate multilingual in the cloud.'
-          : 'Dictate anywhere — Modulate multilingual fast in the cloud.';
+const ENGINE_NAME = {
+  parakeet: 'Parakeet v2', nemotron: 'Nemotron 3.5', mistral: 'Mistral', modulate: 'Modulate',
+};
+const ENGINE_SETTINGS = {
+  parakeet: { asrProvider: 'local', localModel: 'parakeet' },
+  nemotron: { asrProvider: 'local', localModel: 'nemotron' },
+  mistral: { asrProvider: 'cloud', cloudModel: 'mistral' },
+  modulate: { asrProvider: 'cloud', cloudModel: 'modulate' },
+};
+
+function engineOf(settings) {
+  if (settings.asrProvider === 'cloud') {
+    return settings.cloudModel === 'modulate' ? 'modulate' : 'mistral';
+  }
+  return settings.localModel === 'nemotron' ? 'nemotron' : 'parakeet';
 }
 
-function selectedCloudModel() {
-  const picked = document.querySelector('input[name="cloud-model"]:checked');
-  return picked && picked.value === 'modulate' ? 'modulate' : 'mistral';
+function selectedEngine() {
+  const picked = document.querySelector('input[name="engine"]:checked');
+  return picked && ENGINE_SETTINGS[picked.value] ? picked.value : 'parakeet';
 }
 
 function selectedModulateMode() {
@@ -347,9 +353,23 @@ function selectedModulateMode() {
   return resolveMode(picked && picked.value);
 }
 
-function selectedLocalModel() {
-  const picked = document.querySelector('input[name="local-model"]:checked');
-  return picked && picked.value === 'nemotron' ? 'nemotron' : 'parakeet';
+const MODE_LABEL = { fast: 'fast', streaming: 'streaming', multilingual: 'full' };
+
+function showEngine(engine, modulateMode) {
+  const mode = resolveMode(modulateMode);
+  document.querySelector(`input[name="engine"][value="${engine}"]`).checked = true;
+  document.querySelector(`input[name="modulate-mode"][value="${mode}"]`).checked = true;
+  for (const name of Object.keys(ENGINE_SETTINGS)) {
+    $(`engine-${name}`).hidden = name !== engine;
+  }
+  $('modulate-tag').textContent = MODE_LABEL[mode];
+  const where = ENGINE_SETTINGS[engine].asrProvider === 'cloud' ? 'in the cloud' : 'on this device';
+  const detail = engine === 'modulate' ? ` ${MODE_LABEL[mode]}` : '';
+  $('tagline').textContent = `${ENGINE_NAME[engine]}${detail} ${where}`;
+}
+
+function applyTheme(theme) {
+  document.body.dataset.theme = theme === 'synthwave' ? 'synthwave' : 'default';
 }
 
 for (const input of document.querySelectorAll('input[name="output"]')) {
@@ -359,29 +379,20 @@ for (const input of document.querySelectorAll('input[name="output"]')) {
   });
 }
 for (const input of document.querySelectorAll('input[name="theme"]')) {
-  input.addEventListener('change', () => window.api.setSettings({ theme: input.value }));
-}
-for (const input of document.querySelectorAll('input[name="asr"]')) {
   input.addEventListener('change', () => {
-    showProvider(input.value, selectedCloudModel(), selectedModulateMode(), selectedLocalModel());
-    window.api.setSettings({ asrProvider: input.value });
+    applyTheme(input.value);
+    window.api.setSettings({ theme: input.value });
   });
 }
-for (const input of document.querySelectorAll('input[name="local-model"]')) {
+for (const input of document.querySelectorAll('input[name="engine"]')) {
   input.addEventListener('change', () => {
-    showProvider('local', selectedCloudModel(), selectedModulateMode(), input.value);
-    window.api.setSettings({ localModel: input.value });
-  });
-}
-for (const input of document.querySelectorAll('input[name="cloud-model"]')) {
-  input.addEventListener('change', () => {
-    showProvider('cloud', input.value, selectedModulateMode(), selectedLocalModel());
-    window.api.setSettings({ cloudModel: input.value });
+    showEngine(input.value, selectedModulateMode());
+    window.api.setSettings(ENGINE_SETTINGS[input.value]);
   });
 }
 for (const input of document.querySelectorAll('input[name="modulate-mode"]')) {
   input.addEventListener('change', () => {
-    showProvider('cloud', 'modulate', input.value, selectedLocalModel());
+    showEngine('modulate', input.value);
     window.api.setSettings({ modulateMode: input.value });
   });
 }
@@ -524,14 +535,18 @@ function renderStats(snap) {
   $('stat-fixes').textContent = fmtNum(stats.fixes);
   $('stat-wpm').textContent = stats.wpm == null ? '—' : fmtNum(stats.wpm);
   const streak = stats.streak || 0;
+  $('stat-streak').textContent = fmtNum(streak);
   $('streak-caption').textContent = streak
-    ? (streak === 1 ? '1 day streak' : `${fmtNum(streak)} day streak`)
+    ? (streak === 1 ? 'You have dictated today. Keep it going tomorrow.' : `${fmtNum(streak)} days in a row.`)
     : 'Dictate on consecutive days to build a streak.';
 
   const months = $('streak-months');
   const weeksEl = $('streak-weeks');
   months.textContent = '';
   weeksEl.textContent = '';
+  const columns = `repeat(${(stats.weeks || []).length || 53}, minmax(0, 1fr))`;
+  months.style.gridTemplateColumns = columns;
+  weeksEl.style.gridTemplateColumns = columns;
   for (const week of stats.weeks || []) {
     const label = document.createElement('span');
     label.textContent = week.label || '';
@@ -553,8 +568,6 @@ function renderStats(snap) {
     }
     weeksEl.appendChild(col);
   }
-  const scroller = weeksEl.parentElement;
-  if (scroller) scroller.scrollLeft = scroller.scrollWidth;
 }
 
 // Two presses rather than a confirm dialog: a modal would block the whole app,
