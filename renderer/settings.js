@@ -102,19 +102,320 @@ function showDuck(enabled, reduction) {
 
 let keywords = [];
 
-// The command example is replaced at init with one that exists on this OS —
-// a Windows path shown as the hint on a Mac is worse than no hint.
+// The three things a keyword can do. Anything else in the settings file reads
+// as a URL, which is the harmless one — the same rule main applies.
+const KEYWORD_TYPES = ['url', 'command', 'keys'];
+
+// Only the two types that have a single target field need one. The command
+// example is replaced at init with one that exists on this OS — a Windows path
+// shown as the hint on a Mac is worse than no hint.
 const PLACEHOLDER = {
   url: 'https://www.google.com/search?q=%s',
   command: 'notepad.exe %s',
 };
+
+// What the field says between the click and the keyboard actually being held.
+// On Windows the first recording of a session waits for the hook to compile,
+// which is most of a second; after that this is gone before it is read.
+const HOLDING = 'Holding the keyboard…';
+const PRESS = 'Press a key combination…';
+const PRESS_IDLE = 'Click here, then press the keys';
 let launchAppTarget = '';
+// False where nothing on this machine can send a key combination — Linux with
+// only ydotool, macOS without Accessibility. The platform warning says why; the
+// option is greyed out so the answer to "can I pick this" is in the same place
+// as the choice.
+let canSendKeys = true;
+
+// ------------------------------------------------------------- the recorder --
+
+// The step being recorded into right now, or null. Main owns the keyboard — it
+// reads the same uiohook stream the global shortcut does, and on Windows it
+// holds the keys back from everything else while you press them — so this only
+// holds what is needed to paint the field and to put it back if the recording
+// is abandoned.
+let recorder = null;
+
+// Focus starts it; one combination ends it. It does not claim to be recording
+// until main says the keyboard is held, because saying so early would be a lie
+// in the one direction that matters: a key pressed before the hook is up has
+// already gone to the shell.
+async function startRecording(input, onChord) {
+  stopRecording(true);
+  const mine = { input, onChord, previous: input.value, captured: false };
+  recorder = mine;
+  input.value = '';
+  input.placeholder = HOLDING;
+  input.classList.add('recording');
+  $('chord-error').style.display = 'none';
+  await window.api.chordStart();
+  if (recorder !== mine) return;          // clicked away while it was starting
+  input.placeholder = PRESS;
+}
+
+// Anything that did not capture a combination leaves the step as it was: Esc,
+// clicking away, switching applications. A step you merely tabbed through
+// should not come out blank.
+function stopRecording() {
+  if (!recorder) return;
+  const { input, previous, captured } = recorder;
+  recorder = null;
+  window.api.chordStop();
+  input.classList.remove('recording');
+  input.placeholder = PRESS_IDLE;
+  if (!captured) input.value = previous;
+}
+
+// Switching to another application leaves the field focused, so nothing else
+// would stop the recording.
+window.addEventListener('blur', () => stopRecording());
+
+window.api.onChordEvent((ev) => {
+  if (!recorder) return;
+  switch (ev.type) {
+    // The modifiers that are down so far, spelled the way the finished step
+    // will be. Nothing is committed yet.
+    case 'held':
+      recorder.input.value = ev.display;
+      break;
+    case 'chord': {
+      const { onChord } = recorder;
+      recorder.captured = true;
+      recorder.input.value = ev.text;
+      stopRecording();
+      onChord(ev.text);
+      break;
+    }
+    case 'cancelled':
+      stopRecording();
+      break;
+    // The keyboard could not be held. Recording still works, so this says what
+    // is different rather than stopping: the combination will also do whatever
+    // it normally does while you press it.
+    case 'error': {
+      const box = $('chord-error');
+      box.textContent = ev.message;
+      box.style.display = 'block';
+      break;
+    }
+  }
+});
+
+// ----------------------------------------------------------------- macros --
+
+// A macro is stored as one line of text, the same line main reads: steps
+// separated by spaces, a wait written as a number of milliseconds. This is the
+// only piece of that grammar the window needs to know, and main spells it too.
+const WAIT_STEP = /^(\d{1,5})ms$/;
+const MAX_WAIT_MS = 10000;
+const MAX_STEPS = 32;
+const NEW_WAIT_MS = 250;
+
+function parseSteps(target) {
+  return String(target || '').trim().split(/\s+/).filter(Boolean)
+    .map((token) => {
+      const waited = WAIT_STEP.exec(token);
+      return waited
+        ? { kind: 'wait', ms: Math.min(MAX_WAIT_MS, Number(waited[1])) }
+        : { kind: 'keys', text: token };
+    });
+}
+
+// A step with nothing recorded in it yet contributes no token, so it lives in
+// the window until it is filled or removed and never reaches the file.
+function stepsText(steps) {
+  return steps
+    .map((step) => (step.kind === 'wait' ? `${step.ms}ms` : step.text))
+    .filter(Boolean)
+    .join(' ');
+}
+
+// Builds the editor for one keyword's macro into its row. The step list is
+// kept here rather than in `keywords`, because a step with nothing recorded in
+// it is a real thing while you are editing and not a thing the settings file
+// can hold.
+//
+// The editor has two shapes and which one you get follows the macro rather
+// than a setting: one key press is a value and stays on the row in the target
+// field, and anything more is a list. So a keyword starts on one line, grows
+// into a list the first time you add a second step, and collapses back if you
+// delete your way down to one press again.
+//
+// Growing it is the + beside the delete. It does not add anything by itself:
+// it opens the two kinds of step underneath, and whichever you pick is
+// inserted after the thing the + belongs to. Every step in the list carries
+// the same +, which is what puts a wait between two presses rather than only
+// at the end.
+function buildMacro(index, row) {
+  const steps = parseSteps(keywords[index].target);
+  const target = row.querySelector('.kw-target');
+  const del = row.querySelector('.kw-del');
+  const host = document.createElement('div');
+  host.className = 'kw-macro';
+
+  // Which step the open choice sits under, or null for closed. Always a step
+  // index, so the row's own + and a step's + mean the same thing.
+  let openAt = null;
+
+  row.classList.add('keys');
+  const rowPlus = plusButton('kw-plus', () => toggle(0));
+  row.insertBefore(rowPlus, del);
+  row.appendChild(host);
+
+  // There is always something to press into. An empty step contributes no
+  // token, so this never reaches the file.
+  if (!steps.length) steps.push({ kind: 'keys', text: '' });
+
+  function save() {
+    keywords[index].target = stepsText(steps);
+    saveKeywords();
+  }
+
+  function toggle(at) {
+    stopRecording();
+    openAt = openAt === at ? null : at;
+    render();
+  }
+
+  function plusButton(className, onClick) {
+    const button = document.createElement('button');
+    button.className = className;
+    button.title = 'Add a step after this one';
+    button.textContent = '+';
+    button.addEventListener('click', onClick);
+    return button;
+  }
+
+  // The single-press field belongs to the row, not to the list, so it is wired
+  // once here while the list below is rebuilt around it. It is only reachable
+  // when there is one step, which is the one this writes to.
+  recordInto(target, () => steps[0]);
+
+  // Read-only because the keyboard is the way in: every key pressed while one
+  // of these has focus is being recorded, including the ones that would
+  // otherwise type a letter into it.
+  function recordInto(input, step) {
+    input.classList.add('step-keys');
+    input.placeholder = PRESS_IDLE;
+    input.spellcheck = false;
+    input.readOnly = true;
+    input.addEventListener('focus', () => startRecording(input, (text) => {
+      step().text = text;
+      save();
+    }));
+    input.addEventListener('blur', () => stopRecording());
+    input.addEventListener('keydown', (e) => e.preventDefault());
+  }
+
+  function waitInto(input, step) {
+    input.type = 'number';
+    input.min = '0';
+    input.max = String(MAX_WAIT_MS);
+    input.step = '50';
+    input.value = String(step.ms);
+    input.addEventListener('change', () => {
+      const ms = Math.round(Number(input.value));
+      step.ms = Number.isFinite(ms) ? Math.min(MAX_WAIT_MS, Math.max(0, ms)) : 0;
+      input.value = String(step.ms);
+      save();
+    });
+    const unit = document.createElement('span');
+    unit.className = 'step-unit';
+    unit.textContent = 'ms';
+    return unit;
+  }
+
+  function stepRow(step, at) {
+    const line = document.createElement('div');
+    line.className = 'step';
+    const number = document.createElement('span');
+    number.className = 'step-n';
+    number.textContent = `${at + 1}`;
+    const body = document.createElement('div');
+    body.className = 'step-body';
+    const input = document.createElement('input');
+    body.appendChild(input);
+    if (step.kind === 'wait') body.appendChild(waitInto(input, step));
+    else { recordInto(input, () => step); input.value = step.text; }
+    const plus = plusButton('step-plus', () => toggle(at));
+    plus.classList.toggle('open', openAt === at);
+    const remove = document.createElement('button');
+    remove.className = 'step-del';
+    remove.title = 'Remove this step';
+    remove.textContent = '\u00d7';
+    remove.addEventListener('click', () => {
+      stopRecording();
+      steps.splice(at, 1);
+      if (!steps.length) steps.push({ kind: 'keys', text: '' });
+      openAt = null;
+      render();
+      save();
+    });
+    line.append(number, body, plus, remove);
+    return line;
+  }
+
+  // The two kinds of step, shown under the + that was clicked. Picking one
+  // inserts it directly after that step, which is what makes press, wait,
+  // press buildable in the order it runs.
+  function choiceRow(at) {
+    const choice = document.createElement('div');
+    choice.className = 'macro-add';
+    choice.append(
+      addButton(at, 'Add key press', () => ({ kind: 'keys', text: '' })),
+      addButton(at, 'Add wait', () => ({ kind: 'wait', ms: NEW_WAIT_MS })),
+    );
+    return choice;
+  }
+
+  // A new key press is focused, which starts recording, so adding one and
+  // pressing it are one gesture rather than two.
+  function addButton(at, text, make) {
+    const button = document.createElement('button');
+    button.textContent = text;
+    button.disabled = steps.length >= MAX_STEPS;
+    button.addEventListener('click', () => {
+      if (steps.length >= MAX_STEPS) return;
+      stopRecording();
+      const step = make();
+      steps.splice(at + 1, 0, step);
+      openAt = null;
+      render();
+      save();
+      if (step.kind === 'keys') host.querySelectorAll('.step input')[at + 1]?.focus();
+    });
+    return button;
+  }
+
+  function render() {
+    const single = steps.length === 1 && steps[0].kind === 'keys';
+    row.classList.toggle('macro', !single);
+    rowPlus.classList.toggle('open', single && openAt === 0);
+    host.textContent = '';
+    if (single) {
+      target.value = steps[0].text;
+      if (openAt === 0) host.appendChild(choiceRow(0));
+    } else {
+      steps.forEach((step, at) => {
+        host.appendChild(stepRow(step, at));
+        if (openAt === at) host.appendChild(choiceRow(at));
+      });
+    }
+    // An empty host would still take a row of the grid and the gap above it.
+    host.hidden = !host.childElementCount;
+  }
+
+  render();
+}
 
 function saveKeywords() {
   window.api.setSettings({ keywords });
 }
 
 function renderKeywords() {
+  // The rows are rebuilt from scratch, so a recorder pointing into the old
+  // ones has to let go first or it would paint a field nobody can see.
+  stopRecording();
   const list = $('keyword-list');
   list.textContent = '';
   $('keyword-empty').style.display = keywords.length ? 'none' : 'block';
@@ -127,6 +428,7 @@ function renderKeywords() {
       <select class="kw-type">
         <option value="url">Open a URL</option>
         <option value="command">Run a command</option>
+        <option value="keys">Run a macro</option>
       </select>
       <input type="text" class="kw-target" spellcheck="false">
       <button class="kw-del" title="Remove">&times;</button>
@@ -137,20 +439,43 @@ function renderKeywords() {
     const type = row.querySelector('.kw-type');
     const target = row.querySelector('.kw-target');
     word.value = keyword.word || '';
-    type.value = keyword.type === 'command' ? 'command' : 'url';
+    type.value = KEYWORD_TYPES.includes(keyword.type) ? keyword.type : 'url';
     target.value = keyword.target || '';
-    target.placeholder = PLACEHOLDER[type.value];
+    target.placeholder = PLACEHOLDER[type.value] || '';
+    const macro = type.value === 'keys';
+    // Left selectable if a keyword already uses it: the setting is real and
+    // hiding it would make a keyword that does nothing look like one that does.
+    row.querySelector('option[value="keys"]').disabled = !canSendKeys && !macro;
+    // The macro editor takes over the target field and adds a line of its own
+    // underneath. Which of its two shapes you get is its business, not this
+    // one's, so the row is handed over whole.
+    if (macro) buildMacro(index, row);
 
     // 'change' rather than 'input': it fires on blur, so a settings write does
     // not happen on every keystroke.
     word.addEventListener('change', () => { keywords[index].word = word.value.trim(); saveKeywords(); });
-    target.addEventListener('change', () => { keywords[index].target = target.value.trim(); saveKeywords(); });
+    if (!macro) {
+      target.addEventListener('change', () => {
+        keywords[index].target = target.value.trim();
+        saveKeywords();
+      });
+    }
     type.addEventListener('change', () => {
+      stopRecording();
+      // A macro and a target string cannot represent each other, so switching
+      // either way starts empty rather than showing a URL as a step nobody can
+      // press. Switching between a URL and a command keeps the text, because
+      // there the two are often the same thing written twice.
+      if (macro || type.value === 'keys') keywords[index].target = '';
       keywords[index].type = type.value;
-      target.placeholder = PLACEHOLDER[type.value];
       saveKeywords();
+      // Re-rendered rather than adjusted: the target is one field for two of
+      // these types and a whole list for the third, which is a different shape
+      // of row rather than a different placeholder.
+      renderKeywords();
     });
     row.querySelector('.kw-del').addEventListener('click', () => {
+      stopRecording();
       keywords.splice(index, 1);
       renderKeywords();
       saveKeywords();
@@ -234,6 +559,14 @@ function applyPlatform(info) {
   PLACEHOLDER.command = info.commandExample;
   $('cmd-example').textContent = info.commandExample;
   launchAppTarget = info.launchAppTarget || '';
+  canSendKeys = info.keys !== false;
+  $('grab-note').textContent = info.suppressKeys
+    ? 'While you are recording, the keys are held back from everything else, '
+      + 'so pressing Win+D records it instead of showing your desktop. Ctrl+Alt+Del '
+      + 'and Win+L are the exceptions — Windows handles those below any app.'
+    : 'The keys still reach the rest of the system while you record, so a '
+      + 'combination your desktop already uses will do its usual thing as well '
+      + 'as being recorded.';
 
   const duckNote = $('duck-note');
   if (info.ducking.note) {
@@ -438,7 +771,10 @@ $('change-btn').addEventListener('click', () => {
   window.api.captureStart();
   $('change-btn').textContent = 'Cancel';
   $('shortcut-display').classList.add('capturing');
-  $('shortcut-display').textContent = 'Press a shortcut…';
+  // Replaced by main's own first message once the keyboard is held. Until then
+  // a key pressed here still reaches whatever it usually would, so this does
+  // not yet say it is listening.
+  $('shortcut-display').textContent = HOLDING;
 });
 
 window.api.onCaptureEvent((ev) => {

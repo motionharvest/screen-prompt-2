@@ -19,6 +19,18 @@
 # keyboard layout — and the tidying leaves curly apostrophes and em dashes in
 # the text, which is exactly what that drops. KEYEVENTF_UNICODE takes a UTF-16
 # code unit directly and bypasses the layout entirely.
+#
+# It also sends key combinations for the "keys" kind of keyword:
+#
+#     in   {"chord":{"mods":[{"scan":29,"extended":false}],"scan":46,"extended":false}}
+#     out  {"event":"sent"}
+#
+# A scan code rather than a character, because a combination is about which key
+# you pressed, not which letter it would have produced. The scan code comes
+# from the same uiohook reading that recorded it, so the key that goes out is
+# the key that went in. MapVirtualKey turns it into the virtual key the current
+# layout gives that position, which is what applications match their shortcuts
+# against; when it has no answer the scan code is sent on its own.
 
 $ErrorActionPreference = 'Stop'
 
@@ -77,6 +89,33 @@ public static class Typer {
     return input;
   }
 
+  const uint KeyEventExtended = 0x0001;
+  const uint KeyEventScancode = 0x0008;
+  const uint MapVscToVkEx = 3;
+
+  [DllImport("user32.dll")]
+  static extern uint MapVirtualKey(uint code, uint mapType);
+
+  static void AddKey(List<INPUT> inputs, ushort scan, bool extended, bool up) {
+    uint flags = up ? KeyEventKeyUp : 0;
+    if (extended) flags |= KeyEventExtended;
+    ushort vk = (ushort)MapVirtualKey(extended ? (0xE000u | scan) : scan, MapVscToVkEx);
+    if (vk == 0) flags |= KeyEventScancode;
+    inputs.Add(Key(vk, scan, flags));
+  }
+
+  // Modifiers down in the given order, the key, then the modifiers up in
+  // reverse. The whole chord is one SendInput call, so nothing typed by hand
+  // can land between the Ctrl and the C.
+  public static uint SendChord(ushort[] mods, bool[] modExtended, ushort scan, bool extended) {
+    var inputs = new List<INPUT>();
+    for (int i = 0; i < mods.Length; i++) AddKey(inputs, mods[i], modExtended[i], false);
+    AddKey(inputs, scan, extended, false);
+    AddKey(inputs, scan, extended, true);
+    for (int i = mods.Length - 1; i >= 0; i--) AddKey(inputs, mods[i], modExtended[i], true);
+    return SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
+  }
+
   public static uint Send(string text) {
     var inputs = new List<INPUT>();
     foreach (char c in text) {
@@ -119,6 +158,24 @@ while ($null -ne ($line = $reader.ReadLine())) {
   if (-not $line.Trim()) { continue }
   try {
     $req = $line | ConvertFrom-Json
+    if ($null -ne $req.chord) {
+      $mods = @()
+      $modExt = @()
+      foreach ($m in @($req.chord.mods)) {
+        $mods += [uint16]$m.scan
+        $modExt += [bool]$m.extended
+      }
+      $sent = [ScreenPrompt.Typer]::SendChord(
+        [uint16[]]$mods, [bool[]]$modExt,
+        [uint16]$req.chord.scan, [bool]$req.chord.extended)
+      if ($sent -eq 0) {
+        $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        Emit @{ event = 'error'; detail = "SendInput delivered nothing (error $code)" }
+      } else {
+        Emit @{ event = 'sent' }
+      }
+      continue
+    }
     $text = [string]$req.text
     if ([string]::IsNullOrEmpty($text)) { Emit @{ event = 'typed'; chars = 0 }; continue }
     $sent = [ScreenPrompt.Typer]::Send($text)

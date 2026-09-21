@@ -36,9 +36,36 @@ function onPath(name) {
   return false;
 }
 
+// Canonical key name to X keysym. xdotool and wtype both name keys this way,
+// so one table serves both; only the modifier spellings differ, below.
+const KEYSYMS = {
+  enter: 'Return', tab: 'Tab', space: 'space', backspace: 'BackSpace',
+  escape: 'Escape', delete: 'Delete', insert: 'Insert',
+  home: 'Home', end: 'End', pageup: 'Prior', pagedown: 'Next',
+  arrowleft: 'Left', arrowup: 'Up', arrowright: 'Right', arrowdown: 'Down',
+  semicolon: 'semicolon', equal: 'equal', comma: 'comma', minus: 'minus',
+  period: 'period', slash: 'slash', backquote: 'grave',
+  bracketleft: 'bracketleft', backslash: 'backslash', bracketright: 'bracketright',
+  quote: 'apostrophe',
+  capslock: 'Caps_Lock', numlock: 'Num_Lock', scrolllock: 'Scroll_Lock',
+  printscreen: 'Print',
+  ctrl: 'Control_L', alt: 'Alt_L', shift: 'Shift_L', meta: 'Super_L',
+  numpadenter: 'KP_Enter', numpadadd: 'KP_Add', numpadsubtract: 'KP_Subtract',
+  numpadmultiply: 'KP_Multiply', numpaddivide: 'KP_Divide',
+  numpaddecimal: 'KP_Decimal',
+};
+for (let i = 0; i <= 9; i += 1) KEYSYMS[`numpad${i}`] = `KP_${i}`;
+for (let i = 1; i <= 24; i += 1) KEYSYMS[`f${i}`] = `F${i}`;
+
+// Letters and digits are their own keysym, so they need no table.
+function keysym(key) {
+  return /^[a-z0-9]$/.test(key) ? key : KEYSYMS[key];
+}
+
 // Each entry is a way to reach the focused window: `paste` sends Ctrl+V,
-// `type` enters the text itself. Every one of these takes the text as a single
-// bound argument, so nothing in a transcript is ever parsed as shell.
+// `type` enters the text itself, `chord` sends one key combination. Every one
+// of these takes the text as a single bound argument, so nothing in a
+// transcript is ever parsed as shell.
 const INPUT_TOOLS = [
   // Wayland's virtual-keyboard protocol. -M holds a modifier, -m releases it.
   {
@@ -47,6 +74,13 @@ const INPUT_TOOLS = [
     x11: false,
     paste: ['-M', 'ctrl', 'v', '-m', 'ctrl'],
     type: (text) => ['--', text],
+    // Modifiers down, the key, modifiers back up in reverse — wtype has no
+    // combination syntax, it has a stream of press and release instructions.
+    chord: (mods, key) => [
+      ...mods.flatMap((mod) => ['-M', WTYPE_MODS[mod]]),
+      '-k', key,
+      ...[...mods].reverse().flatMap((mod) => ['-m', WTYPE_MODS[mod]]),
+    ],
   },
   // Writes to /dev/uinput, so it is below the display server and works on
   // both — at the cost of needing the daemon running and uinput permissions.
@@ -57,6 +91,10 @@ const INPUT_TOOLS = [
     x11: true,
     paste: ['key', '29:1', '47:1', '47:0', '29:0'],
     type: (text) => ['type', '--', text],
+    // No chord support: ydotool names keys by raw evdev number, and a table of
+    // those would be a third naming of the same keyboard maintained by hand.
+    // wtype and xdotool both take keysyms, so one of those is the answer here.
+    chord: null,
   },
   // XTEST. --clearmodifiers stops a modifier you are still holding from
   // turning Ctrl+V into some other chord.
@@ -68,8 +106,13 @@ const INPUT_TOOLS = [
     // A small delay per key: at 0 some applications drop characters, because
     // XTEST can deliver them faster than the client reads its event queue.
     type: (text) => ['type', '--clearmodifiers', '--delay', '4', '--', text],
+    chord: (mods, key) => ['key', '--clearmodifiers',
+      [...mods.map((mod) => XDOTOOL_MODS[mod]), key].join('+')],
   },
 ];
+
+const WTYPE_MODS = { ctrl: 'ctrl', alt: 'alt', shift: 'shift', meta: 'logo' };
+const XDOTOOL_MODS = { ctrl: 'ctrl', alt: 'alt', shift: 'shift', meta: 'super' };
 
 // Resolved once: PATH does not change under a running app, and this is on the
 // path between "transcribed" and "text appears".
@@ -122,7 +165,24 @@ module.exports = {
         + 'everywhere.',
       );
     }
-    return { paste: Boolean(tool), shortcut: !IS_WAYLAND, warnings };
+    if (tool && !tool.chord) {
+      warnings.push(
+        `Key-combination keywords need wtype or xdotool. ${tool.bin} is what was `
+        + 'found on PATH, and it names keys by raw event code rather than by '
+        + 'name, so a combination cannot be sent through it.',
+      );
+    }
+    return {
+      paste: Boolean(tool),
+      shortcut: !IS_WAYLAND,
+      keys: Boolean(tool && tool.chord),
+      // An X11 keyboard grab would hold the keys back while a combination is
+      // recorded, the way the Windows hook does. There is no such helper here
+      // yet, so a combination the desktop already uses does its usual thing as
+      // well as being recorded.
+      suppressKeys: false,
+      warnings,
+    };
   },
 
   paste: () => new Promise((resolve, reject) => {
@@ -141,6 +201,17 @@ module.exports = {
       return;
     }
     execFile(tool.bin, tool.type(text), (err) => (err ? reject(err) : resolve()));
+  }),
+
+  sendChord: ({ mods, key }) => new Promise((resolve, reject) => {
+    const tool = resolveInputTool();
+    if (!tool || !tool.chord) {
+      reject(new Error('No helper that can send key combinations — install wtype or xdotool.'));
+      return;
+    }
+    const sym = keysym(key);
+    if (!sym) { reject(new Error(`No X keysym for "${key}".`)); return; }
+    execFile(tool.bin, tool.chord(mods, sym), (err) => (err ? reject(err) : resolve()));
   }),
 
   ducking: {

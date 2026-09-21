@@ -71,8 +71,10 @@ no figures — just voice to text.
   wrote it. See [Dictionary](#dictionary).
 - **Keywords** — say a keyword first and the rest of the sentence becomes a
   query: “Google, what is the capital of Indiana” opens the search instead of
-  typing the words. Each keyword opens a URL or runs a command, with `%s`
-  marking where the query goes.
+  typing the words. Each keyword opens a URL, runs a command, or runs a
+  **keyboard macro** into whatever window you were in — a list of key
+  combinations and waits, each one recorded by pressing it. `%s` marks where
+  the query goes. See [Keywords](#keywords).
 - **Colour schemes** — the overlay ships with the default warm amber and a
   **Synthwave** scheme (neon blue and pink bars on deep purple).
 - **Volume ducking** — optionally turns other audio down while you record, so
@@ -193,6 +195,8 @@ Everything works everywhere except where noted:
 | Global shortcut | ✅ | ✅ needs Accessibility | ✅ X11 · ⚠️ Wayland, see below |
 | Auto-paste | ✅ | ✅ needs Accessibility | ✅ with a helper installed |
 | Type mode | ✅ | ✅ needs Accessibility | ✅ with a helper installed |
+| Keyboard-macro keyword | ✅ | ✅ needs Accessibility | ✅ needs wtype or xdotool |
+| Keys held back while recording one | ✅ | ❌ records, but the keys also act | ❌ records, but the keys also act |
 | Volume ducking | ✅ per-app | ⚠️ whole output only | ✅ per-app |
 | Launch-an-app keyword | ✅ Start menu | ✅ /Applications | ✅ `.desktop` entries |
 | Start at login | ✅ registry | ✅ login item | ✅ XDG autostart |
@@ -467,6 +471,7 @@ is not copied or pasted: the words were an instruction, not something to type.
 | Open a URL | `https://www.google.com/search?q=%s` | opens that search in your browser |
 | Open a URL | `https://www.google.com/search?q=` | same — with no `%s` the query is appended |
 | Run a command | `notepad.exe %s` | runs notepad with one argument, `capital of Indiana` |
+| Run a macro | `ctrl+c 400ms ctrl+v` | runs that keyboard macro; the rest of the sentence is ignored |
 
 Commands run **without a shell**, so nothing you say can be read as a shell
 operator — the query is passed as a single argument whatever is in it. That
@@ -478,6 +483,120 @@ also means:
   no-shell design avoids, and a spoken apostrophe is enough to break it.
 - The target is split on spaces, honouring `"quotes"` one level deep. Nested
   quotes are not parsed; put anything complicated in a script file instead.
+
+### Keyboard macros
+
+A *Run a macro* keyword works the keyboard of whatever window has the caret —
+the same window a transcript would have been typed into. Say “Palette” and
+Ctrl+Shift+P opens the command palette in front of you.
+
+**Record a press by pressing it.** The keyword starts as a single target field
+like any other. Click it and it begins recording; press the combination and it
+appears there. **Esc** throws the recording away and keeps what was there
+before, and clicking the field again records over it.
+
+**The + beside the delete grows it into a macro**: a numbered list run in
+order, with the press you already recorded as the first of them. The + adds
+nothing by itself — it opens the two kinds of step underneath, and whichever
+you pick is inserted after it. Every step then carries a + of its own, so
+press, wait, press is built in the order it runs rather than assembled and
+rearranged.
+
+Which shape you see follows the macro rather than a setting, so deleting your
+way back down to one press returns it to a single field.
+
+A step is either a key combination or a wait. **A wait is for where the next
+key has to land after something has happened** — a menu opening, a window
+coming up, a page loading. Two presses with nothing between them still get a
+few milliseconds, because keys sent in the same instant can be missed by
+anything that reads the keyboard by polling.
+
+Steps are removed with the × beside them. There is no way to move one, so
+changing the order means deleting and re-inserting.
+
+The longest single wait is 10 seconds and a macro can have 32 steps. While a
+macro runs the app is busy with it and you cannot dictate, which is the reason
+for both bounds.
+
+**On Windows the keys are held back from everything else while you record**, so
+pressing Win+D records `meta+d` instead of showing your desktop, and Alt+Tab
+records instead of switching windows. Ctrl+Alt+Del and Win+L are the
+exceptions: Windows handles those below where any application can reach. The
+same holding applies to recording the push-to-talk shortcut. Because the
+keyboard is held, clicking is the way out of the field — Tab is a key like any
+other while a recording is running.
+
+This needs a hook that the rest of the system consults before its own
+shortcuts, which is a Windows-only helper; see
+[How the keys are held back](#how-the-keys-are-held-back). On macOS and Linux
+the recording works but the keys are not held, so a combination your desktop
+already uses will do its usual thing as well as being recorded. The settings
+window says which of the two you have.
+
+The whole macro is stored as one line of text, which is what the settings file
+holds and what you can edit there by hand: steps separated by spaces, modifiers
+first joined with `+`, a wait written as a number of milliseconds.
+
+| Target | What it runs |
+| --- | --- |
+| `ctrl+shift+p` | Ctrl, Shift and P together |
+| `f5` | F5 on its own — a bare key is fine here |
+| `alt+arrowleft` | Alt and the left arrow |
+| `ctrl+k ctrl+d` | two combinations in a row, the way editors bind them |
+| `ctrl+c 400ms ctrl+v` | copy, wait four tenths of a second, paste |
+| `500ms enter` | wait half a second, then press Enter |
+
+Modifiers are `ctrl`, `alt`, `shift` and `meta` (the Windows or Command key).
+Everything else is the key's own name, lowercased — `enter`, `tab`, `escape`,
+`space`, `backspace`, `delete`, `home`, `end`, `pageup`, `pagedown`,
+`arrowup`/`arrowdown`/`arrowleft`/`arrowright`, `f1` to `f24`, `numpad0` to
+`numpad9`, and the punctuation keys under the names `comma`, `period`,
+`slash`, `semicolon`, `quote`, `backquote`, `minus`, `equal`, `backslash`,
+`bracketleft` and `bracketright`.
+
+A step that cannot be read stops the whole macro rather than part of it, and
+the overlay says so. Half a macro run into someone's editor is worse than a
+refusal.
+
+Two things this deliberately does not do. **The rest of the sentence is
+ignored**: a macro has nothing to do with a query, so “Copy that” runs the
+macro and drops “that”. And **Esc cannot be recorded**, because Esc is what
+cancels the recording; type `escape` into the settings file by hand if you need
+it.
+
+The recording is read from the same uiohook stream the global shortcut is read
+from, so the key that is stored is the key you pressed. How it is sent again
+differs by platform, because each one offers a different way in: Windows sends
+the scan code and lets the current layout say which virtual key that is, Linux
+hands wtype or xdotool an X keysym, and macOS asks System Events for the
+character where there is one and for the key position where there is not. On a
+single-layout keyboard these are the same key; if you switch layouts, expect
+the letter keys to follow the layout rather than the position.
+
+On Linux this needs **wtype** (Wayland) or **xdotool** (X11). ydotool, which is
+enough for pasting, names keys by raw event code rather than by name and cannot
+send a combination; the settings window says so when that is what it found.
+
+### How the keys are held back
+
+The hook the app already listens to, uiohook, *observes* the keyboard: every
+key it reports has already been delivered to whoever it was going to. That is
+right for a push-to-talk shortcut and wrong for recording one, because Win+D
+reaches the shell and shows the desktop before the recorder hears about it at
+all. The only thing on Windows that runs ahead of the shell's own hotkeys is a
+`WH_KEYBOARD_LL` hook that answers “hallo, handled”, and that needs a process
+with a message pump — which is what `grab-keys.ps1` is. It is kept warm for the
+same reason the typing helper is: compiling the hook costs most of a second,
+and paying that after the click is exactly when the first keys would escape.
+The hook itself only exists between one recording and the next.
+
+A keyboard nobody can type on is much worse than a recording that stopped, so
+it lets go on every path out: when the field loses focus, when you switch to
+another application, when the settings window is hidden or closed, when the app
+quits, and when the helper's own stdin closes because the app is gone. Failing
+all of those it drops the hook by itself after two minutes. Keys the app itself
+sent are passed through rather than swallowed, so a recording can never capture
+what a keyword had just pressed.
 
 **Launching apps** is the common case, so a launcher ships with it. Add a
 `Launch` keyword of type *Run a command* and “Launch Spotify” starts Spotify:

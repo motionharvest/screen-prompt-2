@@ -7,6 +7,11 @@
 //
 //   pythonPath   the virtualenv puts the interpreter in a different place
 //   paste        synthesising Ctrl+V / Cmd+V into someone else's window
+//   sendChord    pressing a key combination into someone else's window
+//   grabKeyboard holding the keyboard back while one is recorded, so that
+//                recording Win+D does not also show the desktop. Optional:
+//                only Windows has it, and `capabilities().suppressKeys` says
+//                so, because a recorder that cannot suppress still records
 //   ducking      turning other apps down uses a different audio stack
 //   autostart    login items are a registry key, a plist, or a .desktop file
 //

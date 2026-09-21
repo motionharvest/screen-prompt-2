@@ -154,7 +154,9 @@
     }
     button:hover { background: var(--btn-hover); }
     button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    #capture-error { color: var(--err-text); font-size: 12px; margin-top: 8px; display: none; }
+    #capture-error, #chord-error {
+      color: var(--err-text); font-size: 12px; margin-top: 8px; display: none;
+    }
     .note { color: var(--muted); font-size: 11.5px; line-height: 1.45; margin-top: 10px; }
 
     .choice { display: flex; gap: 8px; }
@@ -209,6 +211,7 @@
     .dict { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; }
     @container (max-width: 600px) {
       .kw { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+      .kw.keys { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; }
       .kw .kw-del { grid-column: 3; grid-row: 1; }
       .kw .kw-target { grid-column: 1 / -1; grid-row: 2; }
     }
@@ -221,6 +224,76 @@
       outline: none; border-color: var(--accent);
     }
     .kw select { cursor: pointer; }
+
+    /* One key press is a value, and it stays on the row in the target field
+       like any other keyword's target, with a + beside the delete for growing
+       it. More than one is a list, and only then does the row grow downwards:
+       the word and the kind stay on the first line and the steps stack under
+       them, numbered, in the order they run.
+
+       The + and the delete are placed from the end of the row rather than by
+       number, because the wide layout has a column that the narrow one folds
+       away and they belong in the last two either way. */
+    .kw.keys {
+      grid-template-columns:
+        minmax(90px, 130px) minmax(120px, 150px) minmax(0, 1fr) auto auto;
+    }
+    .kw.keys .kw-plus { grid-column: -3 / -2; grid-row: 1; }
+    .kw.keys .kw-del { grid-column: -2 / -1; grid-row: 1; }
+    /* Once it is a list, every step carries its own +, and a second one on the
+       row would have no position to mean. */
+    .kw.macro .kw-plus { display: none; }
+    .kw.macro .kw-target { display: none; }
+    /* Full width, but on whichever row is left. Naming a row would put it on
+       top of the target field in the narrow layout, where that field has
+       already been moved down to a line of its own. */
+    .kw .kw-macro { grid-column: 1 / -1; }
+    .kw.macro .kw-macro {
+      border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px 10px;
+    }
+    .kw-plus, .step-plus {
+      background: none; border: none; color: var(--dim); cursor: pointer;
+      padding: 2px 6px; font-size: 16px; line-height: 1;
+    }
+    .kw-plus:hover, .step-plus:hover { background: none; color: var(--text); }
+    .kw-plus.open, .step-plus.open { background: none; color: var(--accent); }
+    .step {
+      display: grid; grid-template-columns: 20px minmax(0, 1fr) auto auto;
+      gap: 8px; align-items: center; margin-bottom: 6px;
+    }
+    .step-n { color: var(--dim); font-size: 11px; text-align: right; }
+    .step-body { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .step-unit { color: var(--dim); font-size: 11.5px; }
+    .step input {
+      background: var(--field); border: 1px solid var(--line-strong); border-radius: 6px;
+      color: var(--text); font-family: inherit; font-size: 12.5px; padding: 6px 8px;
+      min-width: 0; width: 100%;
+    }
+    .step input:focus { outline: none; border-color: var(--accent); }
+    /* A recorded combination is the text that is stored, so it is shown as a
+       value rather than as prose — and while it is recording the border
+       matches the recording colour used everywhere else in the window. Written
+       for the row rather than for the list, because the same field appears in
+       both. */
+    .kw input.step-keys {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px; cursor: pointer;
+    }
+    .kw input.recording { border-color: var(--rec); }
+    .kw input.recording::placeholder { color: var(--rec); }
+    .step input[type="number"] { width: 82px; flex: none; text-align: right; }
+    .step-del {
+      background: none; border: none; color: var(--dim); cursor: pointer;
+      padding: 2px 6px; font-size: 17px; line-height: 1;
+    }
+    .step-del:hover { background: none; color: var(--err-text); }
+    .macro-add { display: flex; gap: 6px; margin: 2px 0; }
+    /* Between two steps it needs a gap of its own; on the row the row's own
+       margin is already there. */
+    .kw.macro .macro-add { margin-bottom: 8px; }
+    /* Indented to the step bodies once there is a numbering gutter to clear. */
+    .kw.macro .macro-add { margin-left: 28px; }
+    .macro-add button { font-size: 11.5px; padding: 5px 10px; }
     .kw-del, .dict-del {
       background: none; border: none; color: var(--dim); cursor: pointer;
       padding: 2px 6px; font-size: 17px; line-height: 1;
@@ -651,7 +724,8 @@
             Say the keyword first and the rest becomes the query — “Google, what is
             the capital of Indiana”. <code>%s</code> marks where the query goes; with
             no <code>%s</code> a URL just gets it appended. Commands run without a
-            shell, so the query stays one argument no matter what is in it.
+            shell, so the query stays one argument no matter what is in it. A
+            keyboard macro ignores the query and works the keyboard instead.
           </div>
           <details class="how">
             <summary>How a command runs</summary>
@@ -681,8 +755,47 @@
               </p>
             </div>
           </details>
+          <details class="how">
+            <summary>How a macro is recorded</summary>
+            <div class="how-body">
+              <p>
+                <b>Click the target field and press the combination.</b> It
+                starts recording as soon as the field has focus, and the
+                combination appears there as you press it. <b>Esc</b> throws the
+                recording away and keeps what was there before; clicking the
+                field again records over it.
+              </p>
+              <p>
+                <b>The + beside the delete grows it into a macro</b> — a
+                numbered list of steps run in order, with the press you already
+                recorded as the first of them. The + does not add anything by
+                itself: it opens the two kinds of step underneath, and whichever
+                you pick is inserted after it. Every step then carries a + of
+                its own, so press, wait, press is built in the order it runs.
+                Delete your way back down to one press and it goes back to being
+                a single field.
+              </p>
+              <p>
+                <b>A wait</b> is for the cases where the next key has to land
+                after a menu has opened or a window has come up. Two presses
+                with nothing between them still get a few milliseconds, because
+                keys sent in the same instant can be missed. The longest single
+                wait is 10 seconds and a macro can have 32 steps; while one
+                runs, the app is busy with it and you cannot dictate.
+              </p>
+              <p>
+                <b>The keys go to whatever window has the caret</b> — the same
+                window a transcript would have been typed into. The rest of what
+                you said is ignored: a macro has nothing to do with a query. A
+                step that cannot be read stops the whole macro rather than part
+                of it, and the overlay says so.
+              </p>
+              <p id="grab-note"></p>
+            </div>
+          </details>
           <div id="keyword-list"></div>
           <div id="keyword-empty">No keywords — everything you say is transcribed.</div>
+          <div id="chord-error"></div>
           <div class="btn-row">
             <button id="keyword-add">Add keyword</button>
             <button id="launch-add" title="Adds a Launch keyword that starts an app by its spoken name">Add the app launcher</button>

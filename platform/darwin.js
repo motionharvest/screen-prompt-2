@@ -30,6 +30,52 @@ function appleScriptString(text) {
   return text.replace(/\r\n?/g, '\n').split('\n').map(quote).join(' & return & ');
 }
 
+// ------------------------------------------------------------ key combos --
+
+// AppleScript has two ways to press a key and they take different arguments.
+// `keystroke "c"` names a character, which is what you want for the keys that
+// produce one: it resolves through the layout, so Cmd+Z stays Cmd+Z wherever
+// the Z is. `key code 123` names a position, which is the only way to reach
+// the keys that produce nothing. Everything below is one or the other.
+const CHAR_KEYS = {
+  semicolon: ';', equal: '=', comma: ',', minus: '-', period: '.', slash: '/',
+  backquote: '`', bracketleft: '[', backslash: '\\', bracketright: ']', quote: "'",
+};
+
+const CODE_KEYS = {
+  enter: 36, tab: 48, space: 49, backspace: 51, escape: 53, delete: 117,
+  arrowleft: 123, arrowright: 124, arrowdown: 125, arrowup: 126,
+  home: 115, end: 119, pageup: 116, pagedown: 121, capslock: 57,
+  f1: 122, f2: 120, f3: 99, f4: 118, f5: 96, f6: 97, f7: 98, f8: 100,
+  f9: 101, f10: 109, f11: 103, f12: 111, f13: 105, f14: 107, f15: 113,
+  f16: 106, f17: 64, f18: 79, f19: 80, f20: 90,
+  numpad0: 82, numpad1: 83, numpad2: 84, numpad3: 85, numpad4: 86,
+  numpad5: 87, numpad6: 88, numpad7: 89, numpad8: 91, numpad9: 92,
+  numpadenter: 76, numpadadd: 69, numpadsubtract: 78, numpadmultiply: 67,
+  numpaddivide: 75, numpaddecimal: 65,
+  // A modifier recorded on its own. Tapping one does nothing by itself in most
+  // applications, but refusing to send what was recorded would be worse.
+  ctrl: 59, shift: 56, alt: 58, meta: 55,
+};
+
+const MOD_PHRASE = {
+  ctrl: 'control down', alt: 'option down', shift: 'shift down', meta: 'command down',
+};
+
+// `using {…}` takes a list, and a one-element list is written without braces in
+// some examples but accepts them everywhere, so one form covers every case.
+function chordScript(mods, key) {
+  const using = mods.length
+    ? ` using {${mods.map((mod) => MOD_PHRASE[mod]).join(', ')}}`
+    : '';
+  const char = /^[a-z0-9]$/.test(key) ? key : CHAR_KEYS[key];
+  const press = char !== undefined
+    ? `keystroke "${char === '\\' ? '\\\\' : char}"`
+    : (CODE_KEYS[key] !== undefined ? `key code ${CODE_KEYS[key]}` : null);
+  if (!press) return null;
+  return `tell application "System Events" to ${press}${using}`;
+}
+
 module.exports = {
   name: 'darwin',
   prettyName: 'macOS',
@@ -51,6 +97,12 @@ module.exports = {
     return {
       paste: trusted,
       shortcut: trusted,
+      keys: trusted,
+      // A CGEventTap could hold the keyboard back while a combination is
+      // recorded, the way the Windows hook does. There is no such helper here
+      // yet, so a combination the system already uses does its usual thing as
+      // well as being recorded.
+      suppressKeys: false,
       warnings: trusted ? [] : [
         'Accessibility permission is not granted, so the global shortcut and '
         + 'auto-paste will not work. Grant it in System Settings → Privacy & '
@@ -77,6 +129,12 @@ module.exports = {
       `tell application "System Events" to keystroke ${appleScriptString(text)}`,
       'utf8',
     );
+  }),
+
+  sendChord: ({ mods, key }) => new Promise((resolve, reject) => {
+    const script = chordScript(mods, key);
+    if (!script) { reject(new Error(`macOS has no key to press for "${key}".`)); return; }
+    execFile('osascript', ['-e', script], (err) => (err ? reject(err) : resolve()));
   }),
 
   ducking: {

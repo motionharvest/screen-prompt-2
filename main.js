@@ -330,6 +330,112 @@ const SAFE_ALONE = new Set([
   UiohookKey.Insert, UiohookKey.PrintScreen, UiohookKey.ScrollLock, UiohookKey.Pause,
 ]);
 
+// ----------------------------------------------------------------- macros --
+
+// A keyword can work the keyboard instead of opening something. What it sends
+// is a macro: a list of steps run in order, where a step is either a key
+// combination or a wait. The target is stored as text so the settings file
+// stays readable and editable — steps separated by spaces, modifiers first,
+// a wait written as a number of milliseconds:
+//
+//     ctrl+shift+p           one combination
+//     ctrl+k ctrl+d          two in a row, the way editors bind them
+//     f5                     a bare key is fine here
+//     ctrl+c 400ms ctrl+v    copy, wait for the menu to settle, paste
+//
+// A wait is a step rather than a property of the press next to it, so it can
+// go anywhere — including first, to let a window appear before anything is
+// typed into it. Two presses with no wait between them still get a small gap,
+// because that is a fact about delivering keys rather than a timing choice.
+//
+// The key is named with uiohook's own name, lowercased, which is what the
+// recorder in the settings window captures — so the key you pressed and the
+// key that is replayed are the same physical key, named the same way in both
+// directions. A bare key is allowed where the global shortcut forbids it: a
+// combination is only ever sent, never listened for, so it cannot fire while
+// you type.
+//
+// The settings window writes this same text and has to recognise a wait to
+// draw it, so `WAIT_STEP` below is spelled there too. It is the one piece of
+// this grammar that both ends need to know.
+
+const KEY_BY_NAME = new Map();
+for (const [code, name] of KEYCODE_NAMES) KEY_BY_NAME.set(name.toLowerCase(), code);
+
+// One chord to its stored text, or null for a key uiohook does not name.
+function chordText(sc) {
+  const name = KEYCODE_NAMES.get(sc.keycode);
+  if (!name) return null;
+  const mods = MOD_ORDER.filter((m) => sc.mods.includes(m));
+  return [...mods, name.toLowerCase()].join('+');
+}
+
+// One step of the target back to a chord, or null if it cannot be read. The
+// last part is the key and everything before it is a modifier, which is why
+// `ctrl` alone is the Ctrl key and `ctrl+c` is Ctrl held with C.
+function parseChord(token) {
+  const parts = String(token).toLowerCase().split('+');
+  // An empty part means a stray plus. Dropping it would turn `ctrl+` into the
+  // Ctrl key, which is a different combination from the one that was written.
+  if (parts.some((part) => !part)) return null;
+  const key = parts.pop();
+  const mods = [];
+  for (const part of parts) {
+    if (!MOD_ORDER.includes(part) || mods.includes(part)) return null;
+    mods.push(part);
+  }
+  const keycode = KEY_BY_NAME.get(key);
+  if (keycode === undefined) return null;
+  return { mods: MOD_ORDER.filter((m) => mods.includes(m)), key, keycode };
+}
+
+// A wait step: a whole number of milliseconds. Kept in step with the settings
+// window, which writes the same token.
+const WAIT_STEP = /^(\d{1,5})ms$/;
+
+// Bounds, for the same reason every other list here has one. A macro is
+// awaited before the app goes back to idle, so its running time is time you
+// cannot dictate — which is fine when you chose the numbers and not fine when
+// a hand-edited file says 99999ms.
+const MAX_WAIT_MS = 10000;
+const MAX_STEPS = 32;
+
+// The whole target, or null if any step is unreadable. All or nothing: half a
+// macro run into someone's editor is worse than a refusal.
+function parseMacro(target) {
+  const tokens = String(target || '').trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length || tokens.length > MAX_STEPS) return null;
+  const steps = [];
+  for (const token of tokens) {
+    const waited = WAIT_STEP.exec(token);
+    if (waited) {
+      const ms = Number(waited[1]);
+      if (ms > MAX_WAIT_MS) return null;
+      steps.push({ kind: 'wait', ms });
+      continue;
+    }
+    const chord = parseChord(token);
+    if (!chord) return null;
+    steps.push({ kind: 'keys', ...chord });
+  }
+  return steps;
+}
+
+function prettyChord(chord) {
+  return [...chord.mods.map((m) => MOD_PRETTY[m]), prettyKeyName(chord.keycode)].join(' + ');
+}
+
+// For the overlay, which has room for about twenty characters. One combination
+// is worth spelling out; a macro is not, so it says how much ran instead.
+// Falls back to the raw target when it cannot be read — that is the string you
+// have to go and fix.
+function prettyMacro(target) {
+  const steps = parseMacro(target);
+  if (!steps) return String(target || '');
+  if (steps.length === 1 && steps[0].kind === 'keys') return prettyChord(steps[0]);
+  return `${steps.length} step${steps.length === 1 ? '' : 's'}`;
+}
+
 // ------------------------------------------------------------------ trace --
 
 // Launch with SP2_DEBUG=1 to append a line per key event and state change to
@@ -468,30 +574,49 @@ class ShortcutMatcher {
 
 // -------------------------------------------------------- shortcut capture --
 
-// Captures one combination via the same uiohook stream that matching uses, so
+// Captures combinations via the same uiohook stream that matching uses, so
 // what you capture is exactly what will fire. Modifier held + key = combo;
 // modifier tapped alone = lone-modifier shortcut; Esc cancels.
+//
+// Two things record keys and both want the same reading of the keyboard, so
+// they share this one class and differ by mode:
+//
+//   shortcut  the push-to-talk key. A bare key is refused, because it would
+//             fire while you type.
+//   chord     one step of a keyword's macro. Bare keys are allowed, because
+//             this is only ever sent, never listened for.
+//
+// Both capture one combination and then stop. A macro is a list of steps in
+// the settings window, so recording more than one press at a time would be a
+// second way to build the same sequence.
 class ShortcutCapture {
   constructor(onEvent) {
     this.onEvent = onEvent;   // ({type, ...})
     this.active = false;
+    this.mode = 'shortcut';
     this.heldGroups = new Set();
     this.pendingLone = null;
     this.anyKeyPressed = false;
   }
 
-  start() {
+  start(mode = 'shortcut') {
+    this.mode = mode === 'chord' ? 'chord' : 'shortcut';
     this.active = true;
     this.heldGroups.clear();
     this.pendingLone = null;
     this.anyKeyPressed = false;
-    this.onEvent({ type: 'held', display: 'Press a shortcut…' });
+    this.onEvent({ type: 'held', display: this.heldDisplay() });
   }
 
   cancel() { this.active = false; }
 
+  // Chord mode spells the held modifiers the way the target stores them, so the
+  // half-finished chord and the finished ones read as one line rather than two
+  // vocabularies for the same keys.
   heldDisplay() {
-    const parts = MOD_ORDER.filter((m) => this.heldGroups.has(m)).map((m) => MOD_PRETTY[m]);
+    const held = MOD_ORDER.filter((m) => this.heldGroups.has(m));
+    if (this.mode === 'chord') return held.length ? `${held.join('+')}+…` : '';
+    const parts = held.map((m) => MOD_PRETTY[m]);
     return parts.length ? parts.join(' + ') + ' + …' : 'Press a shortcut…';
   }
 
@@ -511,7 +636,7 @@ class ShortcutCapture {
     }
     this.anyKeyPressed = true;
     const mods = MOD_ORDER.filter((m) => this.heldGroups.has(m));
-    if (mods.length === 0 && !SAFE_ALONE.has(keycode)) {
+    if (this.mode !== 'chord' && mods.length === 0 && !SAFE_ALONE.has(keycode)) {
       this.onEvent({
         type: 'error',
         message: `${prettyKeyName(keycode)} on its own would fire while you type. Hold a modifier with it, or use a function key.`,
@@ -536,6 +661,13 @@ class ShortcutCapture {
 
   commit(sc) {
     this.active = false;
+    if (this.mode === 'chord') {
+      const text = chordText(sc);
+      this.onEvent(text
+        ? { type: 'chord', text, pretty: prettyChord(sc) }
+        : { type: 'cancelled' });
+      return;
+    }
     settings.shortcut = sc;
     saveSettings();
     this.onEvent({ type: 'done', pretty: prettyShortcut(sc) });
@@ -923,6 +1055,18 @@ function createSettingsWindow() {
   settingsWin.once('ready-to-show', () => { if (!STARTED_HIDDEN) settingsWin.show(); });
   settingsWin.on('close', (e) => {
     if (!quitting) { e.preventDefault(); settingsWin.hide(); }
+  });
+  // A recorder left running would hold the push-to-talk shortcut disabled, and
+  // the keyboard held back from everything, with no window left to switch
+  // either one on again. The renderer stops it on blur too; this is the one
+  // that cannot be skipped.
+  settingsWin.on('hide', endCapture);
+  settingsWin.on('closed', endCapture);
+  // Where the keyboard cannot be held back — anything but Windows — this is
+  // what is left: it stops the window itself acting on a key being recorded,
+  // even though the rest of the system still gets it.
+  settingsWin.webContents.on('before-input-event', (e) => {
+    if (capture.active) e.preventDefault();
   });
 }
 
@@ -1504,6 +1648,11 @@ function applyDictionary(text, entries) {
 // so "Google is a big company" typed into a document is left alone unless
 // "Google" is the first thing out of your mouth.
 
+// The three things a keyword can do. Anything else in the settings file — an
+// older build's type, a typo — reads as a URL, which is the harmless one.
+const KEYWORD_TYPES = new Set(['url', 'command', 'keys']);
+const keywordType = (value) => (KEYWORD_TYPES.has(value) ? value : 'url');
+
 // Matches the longest keyword that starts the transcript, or null.
 function matchKeyword(text) {
   const lower = text.toLowerCase();
@@ -1518,7 +1667,7 @@ function matchKeyword(text) {
     if (best && best.word.length >= word.length) continue;
     best = {
       word,
-      type: entry.type === 'command' ? 'command' : 'url',
+      type: keywordType(entry.type),
       target: String(entry.target),
       // Drop whatever punctuation the model put after the keyword.
       query: rest.replace(/^[^\p{L}\p{N}]+/u, '').trim(),
@@ -1538,6 +1687,9 @@ function splitArgs(line) {
 
 const LAUNCH_GRACE_MS = 200;    // long enough to catch a bad path
 const LAUNCH_WATCH_MS = 5000;   // ...and a launcher that fails just after it
+const CHORD_GAP_MS = 25;        // the floor between two presses in a row
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function exitMessage(code, stderr) {
   const first = stderr.trim().split('\n')[0].trim();
@@ -1602,6 +1754,28 @@ function launch(argv, onLateFailure) {
 async function runKeyword(keyword) {
   const { word, query } = keyword;
   const pretty = word.charAt(0).toUpperCase() + word.slice(1);
+  if (keyword.type === 'keys') {
+    const steps = parseMacro(keyword.target);
+    if (!steps) throw new Error(`Keyword "${word}" has no keys to send.`);
+    if (!platform.sendChord) {
+      throw new Error(`Key combinations cannot be sent on ${platform.prettyName}.`);
+    }
+    let previous = null;
+    for (const step of steps) {
+      if (step.kind === 'wait') {
+        await wait(step.ms);
+      } else {
+        // Two presses in a row get a small gap even with no wait between them.
+        // Applications that read the keyboard by polling — games, terminals,
+        // anything with its own input loop — miss the second combination when
+        // it lands in the same frame as the first.
+        if (previous === 'keys') await wait(CHORD_GAP_MS);
+        await platform.sendChord(step);
+      }
+      previous = step.kind;
+    }
+    return `⌨ ${pretty} — ${prettyMacro(keyword.target)}`;
+  }
   if (keyword.type === 'command') {
     const argv = splitArgs(keyword.target).map((arg) => arg.replace(/%s/g, query));
     if (!argv.length) throw new Error(`Keyword "${word}" has no command to run.`);
@@ -1964,6 +2138,7 @@ function pasteIntoActiveApp() {
     .catch((err) => { console.error('[paste]', err.message); });
 }
 
+
 // If the shortcut keys are still physically down (hold mode with a fast
 // transcription), Ctrl+V would combine with them into a different chord.
 function waitForKeysReleased(timeoutMs) {
@@ -1981,12 +2156,84 @@ function waitForKeysReleased(timeoutMs) {
 
 const matcher = new ShortcutMatcher(onShortcutPress, onShortcutRelease, onShortcutAbort);
 const capture = new ShortcutCapture((event) => {
+  if (!capture.active) releaseKeyboard();
   matcher.enabled = !capture.active;
-  if (settingsWin && !settingsWin.isDestroyed()) {
-    settingsWin.webContents.send('shortcut:capture:event', event);
-  }
+  captureSend(event);
   if (event.type === 'done') broadcastState();
 });
+
+// The two recorders listen on channels of their own, so the shortcut field does
+// not flicker while a keyword's combination is being recorded.
+function captureSend(event) {
+  if (!settingsWin || settingsWin.isDestroyed()) return;
+  const channel = capture.mode === 'chord' ? 'chord:capture:event' : 'shortcut:capture:event';
+  settingsWin.webContents.send(channel, event);
+}
+
+// Whether the keyboard is currently being held back from everything else.
+// While it is, the keys arrive from the grab rather than from uiohook, which
+// never sees them: our hook answers first and says the key is handled.
+let grabbed = false;
+
+// Counts the starts, so one that is still holding the keyboard can be
+// abandoned by whatever asks for the recording to stop in the meantime. The
+// window is clickable during that second and clicking away has to mean it.
+let captureToken = 0;
+
+// Recording starts only once the keyboard is actually held, so nothing can be
+// captured that has already gone off somewhere else. Where a platform cannot
+// hold it, recording starts anyway and the keys do both — which is how this
+// worked before there was a grab at all, and is still better than refusing to
+// record.
+async function beginCapture(mode) {
+  if (capture.active) return;
+  const token = ++captureToken;
+  // Set before the wait as well as by start(), so anything that asks to stop
+  // during the wait can tell which of the two recorders it is stopping.
+  capture.mode = mode;
+  if (platform.grabKeyboard) {
+    try {
+      await platform.grabKeyboard(({ down, keycode }) => {
+        if (!capture.active) return;
+        if (down) capture.keydown(keycode);
+        else capture.keyup(keycode);
+      });
+      grabbed = true;
+    } catch (err) {
+      grabbed = false;
+      trace('grab failed', String(err.message || err));
+      captureSend({
+        type: 'error',
+        message: 'The keyboard could not be held back while you record, so a '
+          + 'combination your system already uses will also do its usual thing. '
+          + `(${String(err.message || err)})`,
+      });
+    }
+  }
+  if (token !== captureToken) { releaseKeyboard(); return; }
+  capture.start(mode);
+}
+
+// Stops a recording, wherever the reason came from, and lets the keyboard go.
+function endCapture() {
+  captureToken += 1;
+  capture.cancel();
+  releaseKeyboard();
+  matcher.enabled = true;
+}
+
+// Only the keyword recorder. Cancelling a shortcut capture is the settings
+// window's own business, and it has a Cancel button that says so.
+function endChordCapture() {
+  if (capture.mode !== 'chord') return;
+  endCapture();
+}
+
+function releaseKeyboard() {
+  if (!grabbed) return;
+  grabbed = false;
+  platform.releaseKeyboard?.();
+}
 
 ipcMain.handle('settings:get', () => {
   const engine = activeSidecar();
@@ -2064,7 +2311,7 @@ ipcMain.handle('settings:set', (_e, partial) => {
     // typing one — and simply never match until both halves are there.
     settings.keywords = partial.keywords.slice(0, 64).map((entry) => ({
       word: String(entry.word || '').trim(),
-      type: entry.type === 'command' ? 'command' : 'url',
+      type: keywordType(entry.type),
       target: String(entry.target || '').trim(),
     }));
   }
@@ -2154,11 +2401,14 @@ ipcMain.handle('clipboard:write', (_e, text) => {
   if (value) clipboard.writeText(value);
 });
 
-ipcMain.handle('shortcut:capture:start', () => capture.start());
-ipcMain.handle('shortcut:capture:cancel', () => {
-  capture.cancel();
-  matcher.enabled = true;
-});
+ipcMain.handle('shortcut:capture:start', () => beginCapture('shortcut'));
+ipcMain.handle('shortcut:capture:cancel', () => endCapture());
+
+// The keyword recorder. It starts when the field takes focus and stops when it
+// loses it, so there is no separate button to forget to press — and stopping
+// has nothing to commit, because each chord was already sent as it landed.
+ipcMain.handle('chord:capture:start', () => beginCapture('chord'));
+ipcMain.handle('chord:capture:stop', () => endChordCapture());
 
 ipcMain.on('overlay:pcm', (_e, chunk) => {
   if (!liveStream || chunk == null) return;
@@ -2204,7 +2454,9 @@ if (!gotLock) {
       if (e.keycode === settings.shortcut.keycode) {
         trace('hook down', e.keycode, 'capturing=' + capture.active, 'state=' + appState);
       }
-      if (capture.active) { capture.keydown(e.keycode); return; }
+      // While the keyboard is held the same key would arrive twice, once from
+      // each source, so there is exactly one way in at a time.
+      if (capture.active) { if (!grabbed) capture.keydown(e.keycode); return; }
       // Escape cancels a recording or a transcription outright. Only consumed
       // when there was something to cancel, so it stays an ordinary Escape the
       // rest of the time — and it is observed rather than swallowed either way,
@@ -2216,7 +2468,7 @@ if (!gotLock) {
       if (e.keycode === settings.shortcut.keycode) {
         trace('hook up', e.keycode, 'capturing=' + capture.active, 'state=' + appState);
       }
-      if (capture.active) capture.keyup(e.keycode);
+      if (capture.active) { if (!grabbed) capture.keyup(e.keycode); }
       else matcher.keyup(e.keycode);
     });
     uIOhook.start();
@@ -2229,7 +2481,9 @@ if (!gotLock) {
     sidecar.stop();
     nemotron.stop();
     ducker.stop();
-    // Closes the typing helper, if type mode ever started one.
+    // Closes the typing helper, if type mode ever started one, and the key
+    // recorder, which must not outlive us holding the keyboard.
+    endCapture();
     platform.shutdown?.();
   });
 }
