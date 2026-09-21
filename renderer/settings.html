@@ -207,12 +207,12 @@
     .kw, .dict {
       display: grid; gap: 8px; align-items: center; margin-bottom: 8px;
     }
-    .kw { grid-template-columns: minmax(90px, 130px) minmax(120px, 150px) minmax(0, 1fr) auto; }
+    .kw { grid-template-columns: auto minmax(90px, 130px) minmax(120px, 150px) minmax(0, 1fr) auto; }
     .dict { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; }
     @container (max-width: 600px) {
-      .kw { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
-      .kw.keys { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; }
-      .kw .kw-del { grid-column: 3; grid-row: 1; }
+      .kw { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto; }
+      .kw.keys { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto auto; }
+      .kw .kw-del { grid-column: 4; grid-row: 1; }
       .kw .kw-target { grid-column: 1 / -1; grid-row: 2; }
     }
     .kw input[type="text"], .kw select, .dict input[type="text"], .field input {
@@ -236,7 +236,7 @@
        away and they belong in the last two either way. */
     .kw.keys {
       grid-template-columns:
-        minmax(90px, 130px) minmax(120px, 150px) minmax(0, 1fr) auto auto;
+        auto minmax(90px, 130px) minmax(120px, 150px) minmax(0, 1fr) auto auto;
     }
     .kw.keys .kw-plus { grid-column: -3 / -2; grid-row: 1; }
     .kw.keys .kw-del { grid-column: -2 / -1; grid-row: 1; }
@@ -299,7 +299,57 @@
       padding: 2px 6px; font-size: 17px; line-height: 1;
     }
     .kw-del:hover, .dict-del:hover { background: none; color: var(--err-text); }
-    #keyword-add, #dict-add, #history-clear { font-size: 12.5px; padding: 7px 12px; }
+    .kw-group { margin-bottom: 14px; }
+    .kw-group:last-child { margin-bottom: 0; }
+    .kw-group-head {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 4px 6px; margin-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .kw-group-toggle {
+      background: none; border: none; color: var(--dim); cursor: pointer;
+      padding: 2px 4px; font-size: 11px; line-height: 1;
+    }
+    .kw-group-toggle:hover { background: none; color: var(--text); }
+    .kw-group-name {
+      flex: 1; min-width: 0;
+      background: none; border: 1px solid transparent; border-radius: 6px;
+      color: var(--text); font-family: inherit; font-size: 13px; font-weight: 600;
+      padding: 4px 6px;
+    }
+    .kw-group-name:hover { border-color: var(--line-strong); }
+    .kw-group-name:focus {
+      outline: none; background: var(--field); border-color: var(--accent);
+    }
+    .kw-group-label {
+      flex: 1; color: var(--muted); font-size: 13px; font-weight: 600; padding: 4px 6px;
+    }
+    .kw-group-count { color: var(--dim); font-size: 11.5px; }
+    .kw-group-del, .kw-group-add {
+      background: none; border: none; color: var(--dim); cursor: pointer;
+      padding: 2px 6px; line-height: 1;
+    }
+    .kw-group-del { font-size: 17px; }
+    .kw-group-add { font-size: 16px; }
+    .kw-group-del:hover { background: none; color: var(--err-text); }
+    .kw-group-add:hover { background: none; color: var(--accent); }
+    .kw-group-body[hidden] { display: none; }
+    .kw-drop {
+      border: 1px dashed var(--line-strong); border-radius: 6px;
+      color: var(--dim); font-size: 12px; padding: 10px 12px;
+    }
+    .kw-grip {
+      color: var(--dim); cursor: grab; font-size: 15px; line-height: 1;
+      padding: 0 2px; user-select: none;
+    }
+    .kw-grip:hover { color: var(--text); }
+    .kw.dragging { opacity: 0.45; }
+    .kw.drop-before { box-shadow: inset 0 2px 0 -0.5px var(--accent); }
+    .kw.drop-after { box-shadow: inset 0 -2px 0 -0.5px var(--accent); }
+    .kw-group-head.drop-into, .kw-group-body.drop-into {
+      outline: 1px dashed var(--accent); outline-offset: 3px; border-radius: 6px;
+    }
+    #keyword-add, #group-add, #dict-add, #history-clear { font-size: 12.5px; padding: 7px 12px; }
     #keyword-empty, #dict-empty, #history-empty { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
     .dict .arrow { color: var(--dim); font-size: 13px; }
     .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -737,6 +787,11 @@
             no <code>%s</code> a URL just gets it appended. Commands run without a
             shell, so the query stays one argument no matter what is in it. A
             keyboard macro ignores the query and works the keyboard instead.
+            Once there are more of them than you can read at a glance, put them
+            in groups: drag a keyword by the handle at its left into any group,
+            and the + on a group's right adds a new keyword straight into it.
+            Grouping only changes how this list reads — every keyword fires the
+            same whichever group it is in.
           </div>
           <details class="how">
             <summary>How a command runs</summary>
@@ -809,6 +864,7 @@
           <div id="chord-error"></div>
           <div class="btn-row">
             <button id="keyword-add">Add keyword</button>
+            <button id="group-add" title="Groups are a way of reading the list; every keyword works the same in or out of one">New group</button>
             <button id="launch-add" title="Adds a Launch keyword that starts an app by its spoken name">Add the app launcher</button>
           </div>
         </section>

@@ -331,7 +331,7 @@ dictation takes rather than five bins of related switches:
 | --- | --- | --- |
 | **Recording** | what starts a dictation, and where the words go when it ends | shortcut, toggle or hold, paste / type / copy only, restore the clipboard, press Enter after pasting |
 | **Processing** | what the transcript becomes before it goes anywhere | one engine picker (Parakeet or Nemotron on this device, Mistral or Modulate in the cloud) with that engine's own controls beneath it: chunking, the install note, the API key, the Modulate mode; then tidying and the dictionary |
-| **Keywords** | the words that make a dictation do something instead of becoming text | the keyword list |
+| **Keywords** | the words that make a dictation do something instead of becoming text | the keyword list, in named groups once you make them |
 | **History** | what you have already dictated | words, words per minute, tidy/dictionary fixes, a year of days, the last 30 days of transcripts |
 | **App** | how the app behaves and announces itself, rather than any one dictation | colours, sounds, keeping the pill on screen and where it sits, keep the mic ready, duck other audio, start at login |
 
@@ -484,6 +484,21 @@ also means:
   no-shell design avoids, and a spoken apostrophe is enough to break it.
 - The target is split on spaces, honouring `"quotes"` one level deep. Nested
   quotes are not parsed; put anything complicated in a script file instead.
+
+### Groups
+
+A long keyword list reads better in named groups, so the Keywords section
+holds them under headings. **New group** makes an empty one; drag a keyword by
+the handle at its left into any group, or up and down inside the one it is
+already in; the **+** on a group's right adds a new keyword straight into it.
+A heading folds its keywords away while you work somewhere else, and removing a
+group hands its keywords back to *Ungrouped* rather than deleting them.
+
+Grouping is a way of reading the list and nothing else. Matching looks at every
+keyword whatever group it is in, so moving one changes where it sits in this
+window and not what it does. The group is stored on the keyword as `group`, and
+the headings themselves — including one you have made but not filled yet — are
+`keywordGroups` in the settings file.
 
 ### Keyboard macros
 

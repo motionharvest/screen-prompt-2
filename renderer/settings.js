@@ -101,6 +101,7 @@ function showDuck(enabled, reduction) {
 // ---------------------------------------------------------------- keywords --
 
 let keywords = [];
+let keywordGroups = [];
 
 // The three things a keyword can do. Anything else in the settings file reads
 // as a URL, which is the harmless one — the same rule main applies.
@@ -409,7 +410,288 @@ function buildMacro(index, row) {
 }
 
 function saveKeywords() {
-  window.api.setSettings({ keywords });
+  window.api.setSettings({ keywords, keywordGroups });
+}
+
+const GROUP_NAME_MAX = 40;
+const MAX_GROUPS = 32;
+
+const shutGroups = new Set();
+let dragIndex = null;
+
+function groupNames() {
+  const names = keywordGroups.slice();
+  for (const keyword of keywords) {
+    const name = String(keyword.group || '').trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+function uniqueGroupName(base) {
+  const taken = groupNames().map((name) => name.toLowerCase());
+  if (!taken.includes(base.toLowerCase())) return base;
+  for (let n = 2; n <= MAX_GROUPS + 1; n += 1) {
+    if (!taken.includes(`${base} ${n}`.toLowerCase())) return `${base} ${n}`;
+  }
+  return base;
+}
+
+function focusKeyword(index) {
+  $('keyword-list').querySelector(`.kw[data-index="${index}"] .kw-word`)?.focus();
+}
+
+function addKeyword(group) {
+  stopRecording();
+  shutGroups.delete(group);
+  keywords.push({ word: '', type: 'url', target: '', group });
+  renderKeywords();
+  focusKeyword(keywords.length - 1);
+}
+
+function renameGroup(from, to) {
+  const name = to.trim().slice(0, GROUP_NAME_MAX);
+  const clash = groupNames()
+    .some((other) => other !== from && other.toLowerCase() === name.toLowerCase());
+  if (!name || clash) { renderKeywords(); return; }
+  const at = keywordGroups.indexOf(from);
+  if (at === -1) keywordGroups.push(name);
+  else keywordGroups[at] = name;
+  for (const keyword of keywords) {
+    if (String(keyword.group || '').trim() === from) keyword.group = name;
+  }
+  if (shutGroups.delete(from)) shutGroups.add(name);
+  renderKeywords();
+  saveKeywords();
+}
+
+function removeGroup(name) {
+  stopRecording();
+  const at = keywordGroups.indexOf(name);
+  if (at !== -1) keywordGroups.splice(at, 1);
+  for (const keyword of keywords) {
+    if (String(keyword.group || '').trim() === name) keyword.group = '';
+  }
+  shutGroups.delete(name);
+  renderKeywords();
+  saveKeywords();
+}
+
+function moveKeyword(from, to, group) {
+  stopRecording();
+  clearDropMarks();
+  dragIndex = null;
+  const [entry] = keywords.splice(from, 1);
+  entry.group = group;
+  const at = Math.max(0, Math.min(keywords.length, from < to ? to - 1 : to));
+  keywords.splice(at, 0, entry);
+  renderKeywords();
+  saveKeywords();
+}
+
+function clearDropMarks() {
+  for (const el of $('keyword-list').querySelectorAll('.drop-before, .drop-after, .drop-into')) {
+    el.classList.remove('drop-before', 'drop-after', 'drop-into');
+  }
+}
+
+function dropInto(el, group) {
+  el.addEventListener('dragover', (e) => {
+    if (dragIndex === null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearDropMarks();
+    el.classList.add('drop-into');
+  });
+  el.addEventListener('drop', (e) => {
+    if (dragIndex === null) return;
+    e.preventDefault();
+    moveKeyword(dragIndex, keywords.length, group);
+  });
+}
+
+function dragRow(row, index, group) {
+  const grip = row.querySelector('.kw-grip');
+  grip.addEventListener('mousedown', () => { row.draggable = true; });
+  grip.addEventListener('mouseup', () => { row.draggable = false; });
+  row.addEventListener('dragstart', (e) => {
+    stopRecording();
+    dragIndex = index;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(index));
+    row.classList.add('dragging');
+  });
+  row.addEventListener('dragend', () => {
+    row.draggable = false;
+    row.classList.remove('dragging');
+    dragIndex = null;
+    clearDropMarks();
+  });
+  const half = (e) => {
+    const box = row.getBoundingClientRect();
+    return e.clientY > box.top + box.height / 2;
+  };
+  row.addEventListener('dragover', (e) => {
+    if (dragIndex === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    clearDropMarks();
+    row.classList.add(half(e) ? 'drop-after' : 'drop-before');
+  });
+  row.addEventListener('drop', (e) => {
+    if (dragIndex === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    moveKeyword(dragIndex, index + (half(e) ? 1 : 0), group);
+  });
+}
+
+function groupHead(name, count) {
+  const head = document.createElement('div');
+  head.className = 'kw-group-head';
+  const shut = shutGroups.has(name);
+
+  const twisty = document.createElement('button');
+  twisty.className = 'kw-group-toggle';
+  twisty.textContent = shut ? '▸' : '▾';
+  twisty.title = shut ? 'Show these keywords' : 'Hide these keywords';
+  twisty.setAttribute('aria-expanded', String(!shut));
+  twisty.addEventListener('click', () => {
+    stopRecording();
+    if (!shutGroups.delete(name)) shutGroups.add(name);
+    renderKeywords();
+  });
+  head.appendChild(twisty);
+
+  if (name) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'kw-group-name';
+    input.spellcheck = false;
+    input.maxLength = GROUP_NAME_MAX;
+    input.value = name;
+    input.addEventListener('change', () => renameGroup(name, input.value));
+    head.appendChild(input);
+  } else {
+    const label = document.createElement('span');
+    label.className = 'kw-group-label';
+    label.textContent = 'Ungrouped';
+    head.appendChild(label);
+  }
+
+  const tally = document.createElement('span');
+  tally.className = 'kw-group-count';
+  tally.textContent = String(count);
+  head.appendChild(tally);
+
+  if (name) {
+    const remove = document.createElement('button');
+    remove.className = 'kw-group-del';
+    remove.title = 'Remove this group and keep its keywords';
+    remove.textContent = '×';
+    remove.addEventListener('click', () => removeGroup(name));
+    head.appendChild(remove);
+  }
+
+  const add = document.createElement('button');
+  add.className = 'kw-group-add';
+  add.textContent = '+';
+  add.title = name ? `Add a keyword to ${name}` : 'Add a keyword outside every group';
+  add.addEventListener('click', () => addKeyword(name));
+  head.appendChild(add);
+
+  dropInto(head, name);
+  return head;
+}
+
+function groupSection(name, members, headed) {
+  const section = document.createElement('div');
+  section.className = 'kw-group';
+  section.dataset.group = name;
+  const body = document.createElement('div');
+  body.className = 'kw-group-body';
+  if (headed) section.appendChild(groupHead(name, members.length));
+  body.hidden = headed && shutGroups.has(name);
+  for (const index of members) body.appendChild(keywordRow(index, name));
+  if (!members.length && headed) {
+    const empty = document.createElement('div');
+    empty.className = 'kw-drop';
+    empty.textContent = name
+      ? 'Empty — drag keywords here'
+      : 'Empty — every keyword is in a group';
+    body.appendChild(empty);
+  }
+  dropInto(body, name);
+  section.appendChild(body);
+  return section;
+}
+
+function keywordRow(index, group) {
+  const keyword = keywords[index];
+  const row = document.createElement('div');
+  row.className = 'kw';
+  row.dataset.index = String(index);
+  row.innerHTML = `
+    <span class="kw-grip" title="Drag into a group, or up and down">&#x283f;</span>
+    <input type="text" class="kw-word" placeholder="Google" spellcheck="false">
+    <select class="kw-type">
+      <option value="url">Open a URL</option>
+      <option value="command">Run a command</option>
+      <option value="keys">Run a macro</option>
+    </select>
+    <input type="text" class="kw-target" spellcheck="false">
+    <button class="kw-del" title="Remove">&times;</button>
+  `;
+  // Values are assigned as properties rather than interpolated into the
+  // markup above, so a keyword containing quotes cannot break out of it.
+  const word = row.querySelector('.kw-word');
+  const type = row.querySelector('.kw-type');
+  const target = row.querySelector('.kw-target');
+  word.value = keyword.word || '';
+  type.value = KEYWORD_TYPES.includes(keyword.type) ? keyword.type : 'url';
+  target.value = keyword.target || '';
+  target.placeholder = PLACEHOLDER[type.value] || '';
+  const macro = type.value === 'keys';
+  // Left selectable if a keyword already uses it: the setting is real and
+  // hiding it would make a keyword that does nothing look like one that does.
+  row.querySelector('option[value="keys"]').disabled = !canSendKeys && !macro;
+  // The macro editor takes over the target field and adds a line of its own
+  // underneath. Which of its two shapes you get is its business, not this
+  // one's, so the row is handed over whole.
+  if (macro) buildMacro(index, row);
+
+  // 'change' rather than 'input': it fires on blur, so a settings write does
+  // not happen on every keystroke.
+  word.addEventListener('change', () => { keywords[index].word = word.value.trim(); saveKeywords(); });
+  if (!macro) {
+    target.addEventListener('change', () => {
+      keywords[index].target = target.value.trim();
+      saveKeywords();
+    });
+  }
+  type.addEventListener('change', () => {
+    stopRecording();
+    // A macro and a target string cannot represent each other, so switching
+    // either way starts empty rather than showing a URL as a step nobody can
+    // press. Switching between a URL and a command keeps the text, because
+    // there the two are often the same thing written twice.
+    if (macro || type.value === 'keys') keywords[index].target = '';
+    keywords[index].type = type.value;
+    saveKeywords();
+    // Re-rendered rather than adjusted: the target is one field for two of
+    // these types and a whole list for the third, which is a different shape
+    // of row rather than a different placeholder.
+    renderKeywords();
+  });
+  row.querySelector('.kw-del').addEventListener('click', () => {
+    stopRecording();
+    keywords.splice(index, 1);
+    renderKeywords();
+    saveKeywords();
+  });
+  dragRow(row, index, group);
+  return row;
 }
 
 function renderKeywords() {
@@ -418,86 +700,46 @@ function renderKeywords() {
   stopRecording();
   const list = $('keyword-list');
   list.textContent = '';
-  $('keyword-empty').style.display = keywords.length ? 'none' : 'block';
+  const names = groupNames();
+  $('keyword-empty').style.display = keywords.length || names.length ? 'none' : 'block';
 
+  const members = new Map([['', []]]);
+  for (const name of names) members.set(name, []);
   keywords.forEach((keyword, index) => {
-    const row = document.createElement('div');
-    row.className = 'kw';
-    row.innerHTML = `
-      <input type="text" class="kw-word" placeholder="Google" spellcheck="false">
-      <select class="kw-type">
-        <option value="url">Open a URL</option>
-        <option value="command">Run a command</option>
-        <option value="keys">Run a macro</option>
-      </select>
-      <input type="text" class="kw-target" spellcheck="false">
-      <button class="kw-del" title="Remove">&times;</button>
-    `;
-    // Values are assigned as properties rather than interpolated into the
-    // markup above, so a keyword containing quotes cannot break out of it.
-    const word = row.querySelector('.kw-word');
-    const type = row.querySelector('.kw-type');
-    const target = row.querySelector('.kw-target');
-    word.value = keyword.word || '';
-    type.value = KEYWORD_TYPES.includes(keyword.type) ? keyword.type : 'url';
-    target.value = keyword.target || '';
-    target.placeholder = PLACEHOLDER[type.value] || '';
-    const macro = type.value === 'keys';
-    // Left selectable if a keyword already uses it: the setting is real and
-    // hiding it would make a keyword that does nothing look like one that does.
-    row.querySelector('option[value="keys"]').disabled = !canSendKeys && !macro;
-    // The macro editor takes over the target field and adds a line of its own
-    // underneath. Which of its two shapes you get is its business, not this
-    // one's, so the row is handed over whole.
-    if (macro) buildMacro(index, row);
-
-    // 'change' rather than 'input': it fires on blur, so a settings write does
-    // not happen on every keystroke.
-    word.addEventListener('change', () => { keywords[index].word = word.value.trim(); saveKeywords(); });
-    if (!macro) {
-      target.addEventListener('change', () => {
-        keywords[index].target = target.value.trim();
-        saveKeywords();
-      });
-    }
-    type.addEventListener('change', () => {
-      stopRecording();
-      // A macro and a target string cannot represent each other, so switching
-      // either way starts empty rather than showing a URL as a step nobody can
-      // press. Switching between a URL and a command keeps the text, because
-      // there the two are often the same thing written twice.
-      if (macro || type.value === 'keys') keywords[index].target = '';
-      keywords[index].type = type.value;
-      saveKeywords();
-      // Re-rendered rather than adjusted: the target is one field for two of
-      // these types and a whole list for the third, which is a different shape
-      // of row rather than a different placeholder.
-      renderKeywords();
-    });
-    row.querySelector('.kw-del').addEventListener('click', () => {
-      stopRecording();
-      keywords.splice(index, 1);
-      renderKeywords();
-      saveKeywords();
-    });
-    list.appendChild(row);
+    const name = String(keyword.group || '').trim();
+    members.get(members.has(name) ? name : '').push(index);
   });
+
+  for (const [name, indexes] of members) {
+    if (!name && !names.length && !indexes.length) continue;
+    list.appendChild(groupSection(name, indexes, names.length > 0));
+  }
+
+  $('group-add').disabled = names.length >= MAX_GROUPS;
   $('launch-add').disabled = !launchAppTarget
     || keywords.some((k) => k.type === 'command' && k.target === launchAppTarget);
 }
 
-$('keyword-add').addEventListener('click', () => {
-  keywords.push({ word: '', type: 'url', target: '' });
+$('keyword-add').addEventListener('click', () => addKeyword(''));
+
+$('group-add').addEventListener('click', () => {
+  if (groupNames().length >= MAX_GROUPS) return;
+  const name = uniqueGroupName('New group');
+  keywordGroups.push(name);
   renderKeywords();
-  $('keyword-list').lastElementChild.querySelector('.kw-word').focus();
+  saveKeywords();
+  const input = $('keyword-list')
+    .querySelector(`.kw-group[data-group="${CSS.escape(name)}"] .kw-group-name`);
+  input?.focus();
+  input?.select();
 });
 
 $('launch-add').addEventListener('click', () => {
   if ($('launch-add').disabled) return;
-  keywords.push({ word: 'Launch', type: 'command', target: launchAppTarget });
+  keywords.push({ word: 'Launch', type: 'command', target: launchAppTarget, group: '' });
   renderKeywords();
   saveKeywords();
-  $('keyword-list').lastElementChild.querySelector('.kw-word').focus();
+  focusKeyword(keywords.length - 1);
 });
 
 // -------------------------------------------------------------- dictionary --
@@ -635,6 +877,7 @@ async function init() {
   showRestoreClipboard(state.settings.output);
   showPressEnter(state.settings.output);
   keywords = (state.settings.keywords || []).map((k) => ({ ...k }));
+  keywordGroups = (state.settings.keywordGroups || []).slice();
   renderKeywords();
   dictionary = (state.settings.dictionary || []).map((d) => ({ ...d }));
   renderDictionary();

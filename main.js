@@ -48,7 +48,8 @@ const DEFAULT_SETTINGS = {
   // minute or two. Turn this on to always transcribe in one pass and skip the
   // chunking, trading a small quality risk on very long clips for speed.
   skipChunking: false,
-  keywords: [],              // [{word, type: 'url'|'command', target}]
+  keywords: [],              // [{word, type: 'url'|'command', target, group}]
+  keywordGroups: [],
   // Words the model reliably mishears, and how they should be spelled instead.
   dictionary: [],            // [{from, to}]
   theme: 'default',          // overlay colour scheme: 'default' | 'synthwave'
@@ -1654,6 +1655,9 @@ function applyDictionary(text, entries) {
 const KEYWORD_TYPES = new Set(['url', 'command', 'keys']);
 const keywordType = (value) => (KEYWORD_TYPES.has(value) ? value : 'url');
 
+const GROUP_NAME_MAX = 40;
+const MAX_KEYWORD_GROUPS = 32;
+
 // Matches the longest keyword that starts the transcript, or null.
 function matchKeyword(text) {
   const lower = text.toLowerCase();
@@ -2256,6 +2260,7 @@ ipcMain.handle('settings:get', () => {
     launchAtStartup: launchAtStartupEnabled(), model: settings.model,
     theme: settings.theme, duck: settings.duck, duckLevel: settings.duckLevel,
     tidy: settings.tidy, keywords: settings.keywords,
+    keywordGroups: settings.keywordGroups,
     dictionary: settings.dictionary,
     overlayFollow: settings.overlayFollow,
     overlayAlways: settings.overlayAlways,
@@ -2326,7 +2331,18 @@ ipcMain.handle('settings:set', (_e, partial) => {
       word: String(entry.word || '').trim(),
       type: keywordType(entry.type),
       target: String(entry.target || '').trim(),
+      group: String(entry.group || '').trim().slice(0, GROUP_NAME_MAX),
     }));
+  }
+  if (Array.isArray(partial.keywordGroups)) {
+    const groups = [];
+    for (const raw of partial.keywordGroups) {
+      const name = String(raw || '').trim().slice(0, GROUP_NAME_MAX);
+      if (!name || groups.length >= MAX_KEYWORD_GROUPS) continue;
+      if (groups.some((kept) => kept.toLowerCase() === name.toLowerCase())) continue;
+      groups.push(name);
+    }
+    settings.keywordGroups = groups;
   }
   if (partial.overlayAlways !== undefined) {
     settings.overlayAlways = Boolean(partial.overlayAlways);
