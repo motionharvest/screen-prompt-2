@@ -626,12 +626,14 @@ async function init() {
   $('skip-chunking').checked = state.settings.skipChunking;
   $('keep-mic-warm').checked = state.settings.keepMicWarm;
   $('restore-clipboard').checked = state.settings.restoreClipboard;
+  $('press-enter').checked = state.settings.pressEnter;
   $('mistral-key').value = state.settings.mistralApiKey || '';
   $('modulate-key').value = state.settings.modulateApiKey || '';
   showEngine(engineOf(state.settings), state.settings.modulateMode);
   $('overlay-follow').checked = state.settings.overlayFollow;
   $('overlay-always').checked = state.settings.overlayAlways;
   showRestoreClipboard(state.settings.output);
+  showPressEnter(state.settings.output);
   keywords = (state.settings.keywords || []).map((k) => ({ ...k }));
   renderKeywords();
   dictionary = (state.settings.dictionary || []).map((d) => ({ ...d }));
@@ -652,6 +654,12 @@ function showRestoreClipboard(output) {
   const on = output === 'paste';
   $('restore-clipboard').disabled = !on;
   $('restore-clipboard-row').classList.toggle('off', !on);
+}
+
+function showPressEnter(output) {
+  const on = output === 'paste' && canSendKeys;
+  $('press-enter').disabled = !on;
+  $('press-enter-row').classList.toggle('off', !on);
 }
 
 function resolveMode(modulateMode) {
@@ -708,6 +716,7 @@ function applyTheme(theme) {
 for (const input of document.querySelectorAll('input[name="output"]')) {
   input.addEventListener('change', () => {
     showRestoreClipboard(input.value);
+    showPressEnter(input.value);
     window.api.setSettings({ output: input.value });
   });
 }
@@ -739,6 +748,7 @@ $('tidy').addEventListener('change', (e) => window.api.setSettings({ tidy: e.tar
 $('skip-chunking').addEventListener('change', (e) => window.api.setSettings({ skipChunking: e.target.checked }));
 $('keep-mic-warm').addEventListener('change', (e) => window.api.setSettings({ keepMicWarm: e.target.checked }));
 $('restore-clipboard').addEventListener('change', (e) => window.api.setSettings({ restoreClipboard: e.target.checked }));
+$('press-enter').addEventListener('change', (e) => window.api.setSettings({ pressEnter: e.target.checked }));
 $('duck').addEventListener('change', (e) => {
   showDuck(e.target.checked, Number($('duck-level').value));
   window.api.setSettings({ duck: e.target.checked });

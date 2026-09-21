@@ -35,7 +35,8 @@ no figures — just voice to text.
 - **Paste, type, or copy** — three ways for the words to arrive:
   - **Paste** copies and then pastes into the active app. Optionally puts the
     previous clipboard contents back afterwards, so dictating does not cost you
-    whatever you had copied.
+    whatever you had copied, and optionally presses **Enter** once the paste has
+    landed, so a chat box or a message field sends itself.
   - **Type** enters the text as keystrokes and never touches the clipboard at
     all. Slower for long transcripts, and some editors will autocomplete over
     it, but nothing you had copied is disturbed.
@@ -328,7 +329,7 @@ dictation takes rather than five bins of related switches:
 
 | Tab | Governs | Holds |
 | --- | --- | --- |
-| **Recording** | what starts a dictation, and where the words go when it ends | shortcut, toggle or hold, paste / type / copy only, restore the clipboard |
+| **Recording** | what starts a dictation, and where the words go when it ends | shortcut, toggle or hold, paste / type / copy only, restore the clipboard, press Enter after pasting |
 | **Processing** | what the transcript becomes before it goes anywhere | one engine picker (Parakeet or Nemotron on this device, Mistral or Modulate in the cloud) with that engine's own controls beneath it: chunking, the install note, the API key, the Modulate mode; then tidying and the dictionary |
 | **Keywords** | the words that make a dictation do something instead of becoming text | the keyword list |
 | **History** | what you have already dictated | words, words per minute, tidy/dictionary fixes, a year of days, the last 30 days of transcripts |
@@ -678,6 +679,12 @@ the success line. Without that a keyword can only ever claim it worked.
   soon and the paste lands empty. Text, formatting and images are preserved;
   copied *files* cannot be, so a clipboard holding files is left holding the
   transcript instead.
+- Pressing Enter after a paste waits 250 ms first, for the same reason and from
+  the other side: `Ctrl+V` returns before the application has read the
+  clipboard, and an Enter that arrives first sends an empty box. It is sent
+  through the same key-combination helper the `keys` keywords use, so where that
+  is unavailable — Linux with no `wtype` or `xdotool` — the text is pasted and
+  left unsent rather than the delivery failing.
 
 ## Licence
 

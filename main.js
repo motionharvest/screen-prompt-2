@@ -39,6 +39,7 @@ const DEFAULT_SETTINGS = {
   // Paste mode only: put back whatever was on the clipboard before the
   // transcript displaced it.
   restoreClipboard: false,
+  pressEnter: false,
   sounds: true,
   tidy: true,                // strip fillers and stutters from the transcript
   // Long recordings normally go through voice-activity chunking (Parakeet is
@@ -2053,6 +2054,8 @@ async function handleAudio(buffer, duration, cancelled, error) {
 // generous — it only costs anything when clipboard restore is switched on.
 const CLIPBOARD_SETTLE_MS = 400;
 
+const ENTER_SETTLE_MS = 250;
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Text, HTML, RTF and images are preserved. Copied *files* are not: Electron
@@ -2118,6 +2121,10 @@ async function deliver(text) {
   if (settings.output !== 'paste') return 'Copied';
 
   await pasteIntoActiveApp();
+  if (settings.pressEnter) {
+    await delay(ENTER_SETTLE_MS);
+    await pressEnterIntoActiveApp();
+  }
   if (previous) {
     await delay(CLIPBOARD_SETTLE_MS);
     writeClipboard(previous);
@@ -2138,6 +2145,11 @@ function pasteIntoActiveApp() {
     .catch((err) => { console.error('[paste]', err.message); });
 }
 
+function pressEnterIntoActiveApp() {
+  if (!platform.sendChord) return Promise.resolve();
+  return platform.sendChord({ mods: [], key: 'enter', keycode: UiohookKey.Enter })
+    .catch((err) => { console.error('[enter]', err.message); });
+}
 
 // If the shortcut keys are still physically down (hold mode with a fast
 // transcription), Ctrl+V would combine with them into a different chord.
@@ -2250,6 +2262,7 @@ ipcMain.handle('settings:get', () => {
     skipChunking: settings.skipChunking,
     keepMicWarm: settings.keepMicWarm,
     restoreClipboard: settings.restoreClipboard,
+    pressEnter: settings.pressEnter,
     asrProvider: settings.asrProvider === 'cloud' ? 'cloud' : 'local',
     localModel: resolveLocalModel(settings),
     cloudModel: settings.cloudModel === 'modulate' ? 'modulate' : 'mistral',
@@ -2293,7 +2306,7 @@ ipcMain.handle('platform:request-permission', () => (
 
 ipcMain.handle('settings:set', (_e, partial) => {
   for (const key of ['mode', 'output', 'sounds', 'theme', 'duckLevel', 'tidy',
-    'skipChunking', 'restoreClipboard']) {
+    'skipChunking', 'restoreClipboard', 'pressEnter']) {
     if (partial[key] !== undefined) settings[key] = partial[key];
   }
   if (partial.launchAtStartup !== undefined) {
