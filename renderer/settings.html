@@ -393,11 +393,11 @@
     }
     input[type="range"]:disabled { opacity: 0.4; cursor: default; }
     input[type="range"]:disabled::-webkit-slider-thumb { cursor: default; }
-    #duck-value {
-      font-size: 13px; color: var(--accent-text); width: 40px; text-align: right;
+    .slider-row .value {
+      font-size: 13px; color: var(--accent-text); width: 52px; text-align: right;
       font-variant-numeric: tabular-nums;
     }
-    #duck-row.off #duck-value { color: var(--dim); }
+    .slider-row.off .value { color: var(--dim); }
 
     .field { margin-top: 12px; }
     .field .t { display: block; font-size: 13px; }
@@ -786,7 +786,10 @@
             the capital of Indiana”. <code>%s</code> marks where the query goes; with
             no <code>%s</code> a URL just gets it appended. Commands run without a
             shell, so the query stays one argument no matter what is in it. A
-            keyboard macro ignores the query and works the keyboard instead.
+            keyboard macro ignores the query and works the keyboard instead. An
+            alias pastes the text you wrote for it, the same way a transcript
+            would be pasted; <code>%s</code> in that text becomes the query, and
+            with no <code>%s</code> the query is left out.
             Once there are more of them than you can read at a glance, put them
             in groups: drag a keyword by the handle at its left into any group,
             and the + on a group's right adds a new keyword straight into it.
@@ -990,6 +993,52 @@
           </div>
         </section>
 
+        <!-- The trail is the pill's readout a second time: the same colours,
+             the same moment, drawn where you are already looking instead of at
+             the edge of the screen. It sits next to the pill's own card for
+             that reason, and above the microphone's, which is about being
+             heard rather than about being told anything. -->
+        <section class="card">
+          <h3>Cursor trail</h3>
+          <div class="switch-row">
+            <div>
+              <div class="t">Draw a trail while recording</div>
+              <div class="d">
+                The cursor leaves a line behind it in the pill's colours for as
+                long as the app is listening, on whichever monitor you are on.
+                It fades away when you stop, and never takes a click.
+              </div>
+            </div>
+            <input type="checkbox" class="switch" id="cursor-trail">
+          </div>
+          <div class="slider-row" id="trail-length-row">
+            <div class="t">Length</div>
+            <input type="range" id="trail-length" min="150" max="2000" step="50">
+            <div class="value" id="trail-length-value">650 px</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Numbered points</h3>
+          <div class="switch-row">
+            <div>
+              <div class="t">Number what you point at</div>
+              <div class="d">
+                Say "this" or "here" while dictating and the pointer becomes
+                a crosshair: drag a box around what you mean, and the next
+                number appears just above its top-left corner. Nothing is
+                drawn until you release a rectangle, and the crosshair waits as
+                long as you need. Escape puts it away without stopping the
+                dictation; a second Escape stops the dictation the way it
+                always does. Everything fades when you stop talking. Needs a
+                streaming model, which today means local Nemotron 3.5 or
+                Modulate on streaming.
+              </div>
+            </div>
+            <input type="checkbox" class="switch" id="point-markers">
+          </div>
+        </section>
+
         <!-- Both of these are about the microphone hearing you properly: one keeps
              the device open so it is listening by the time you speak, the other
              quietens whatever else is playing into it. -->
@@ -1018,7 +1067,7 @@
           <div class="slider-row" id="duck-row">
             <div class="t">Reduce by</div>
             <input type="range" id="duck-level" min="10" max="100" step="5">
-            <div id="duck-value">75%</div>
+            <div class="value" id="duck-value">75%</div>
           </div>
         </section>
 

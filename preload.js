@@ -25,4 +25,13 @@ contextBridge.exposeInMainWorld('api', {
   sendAudio: (buffer, duration, cancelled, error) =>
     ipcRenderer.send('overlay:audio', { buffer, duration, cancelled, error }),
   sendPcm: (buffer) => ipcRenderer.send('overlay:pcm', buffer),
+
+  // cursor trail window
+  // Two channels rather than one because they are two different rates: the
+  // scheme and the length change when you change them, the point changes sixty
+  // times a second for as long as you are talking.
+  onTrailCmd: (fn) => ipcRenderer.on('trail:cmd', (_e, c) => fn(c)),
+  onTrailPoint: (fn) => ipcRenderer.on('trail:point', (_e, p) => fn(p)),
+  trailDrag: (phase) => ipcRenderer.send('trail:drag', phase),
+  trailBox: (box) => ipcRenderer.send('trail:box', box),
 });

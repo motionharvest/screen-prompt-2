@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    * { margin: 0; padding: 0; }
+    /* One of these covers one whole monitor while you dictate, so everything
+       about it has to be invisible except the line it draws: no background, no
+       scrollbars, and nothing the pointer can catch on. The window itself is
+       click-through, which is the part that matters; these are what stop it
+       looking like a window even before that. */
+    html, body { background: transparent; overflow: hidden; height: 100%; }
+    body { -webkit-user-select: none; }
+    #trail { display: block; width: 100%; height: 100%; }
+    #marks {
+      position: absolute; inset: 0;
+      pointer-events: none;
+      font: 600 12px/1 -apple-system, "Segoe UI", system-ui, sans-serif;
+    }
+    .mark {
+      position: absolute;
+      width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      color: rgba(16, 12, 10, 0.92);
+      background: linear-gradient(180deg, var(--bar-top), var(--bar-bottom));
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28), 0 2px 5px rgba(0, 0, 0, 0.45);
+      transform: translate(-50%, -50%);
+      animation: mark-in 190ms cubic-bezier(0.2, 0.9, 0.3, 1.25) both;
+    }
+    @keyframes mark-in {
+      from { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+      to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    }
+    body[data-armed] { cursor: crosshair; }
+    .box {
+      position: absolute;
+      border: 1.5px solid var(--bar-top);
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.05);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.30), inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+    }
+    .box.drawing { border-style: dashed; }
+    body[data-fading] .mark,
+    body[data-fading] .box {
+      animation: none;
+      opacity: 0;
+      transition: opacity 420ms linear;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="trail"></canvas>
+  <div id="marks"></div>
+  <script src="trail.js"></script>
+</body>
+</html>

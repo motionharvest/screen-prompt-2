@@ -6,6 +6,7 @@
 
 const {
   app, BrowserWindow, ipcMain, clipboard, screen, Tray, Menu, nativeImage, session, shell,
+  powerMonitor,
 } = require('electron');
 const { uIOhook, UiohookKey } = require('uiohook-napi');
 const { spawn, spawnSync } = require('child_process');
@@ -24,6 +25,7 @@ const {
 const {
   countWords, countFixes, addClip, pruneDays, seedFromHistory, summarize,
 } = require('./stats');
+const { createCueCounter } = require('./markers');
 
 // ---------------------------------------------------------------- settings --
 
@@ -48,7 +50,7 @@ const DEFAULT_SETTINGS = {
   // minute or two. Turn this on to always transcribe in one pass and skip the
   // chunking, trading a small quality risk on very long clips for speed.
   skipChunking: false,
-  keywords: [],              // [{word, type: 'url'|'command', target, group}]
+  keywords: [],              // [{word, type: 'url'|'command'|'keys'|'alias', target, group}]
   keywordGroups: [],
   // Words the model reliably mishears, and how they should be spelled instead.
   dictionary: [],            // [{from, to}]
@@ -62,6 +64,13 @@ const DEFAULT_SETTINGS = {
   // shows where it lives and can be dragged. Off, it appears only while there
   // is something to say.
   overlayAlways: false,
+  // Draw the last stretch of the cursor's path while recording, in the pill's
+  // own colours. It is the same readout the spectrum is — the app is
+  // listening — put where you are already looking instead of at the edge of
+  // the screen. Off by default: it draws over every window you own.
+  cursorTrail: false,
+  cursorTrailLength: 650,    // how many pixels of path are kept behind the cursor
+  pointMarkers: true,
   duck: false,               // quieten other apps while recording
   duckLevel: 0.25,           // ...to this fraction of their own volume
   // Hold the microphone open between recordings. Opening it is a few hundred
@@ -478,6 +487,14 @@ class ShortcutMatcher {
   get sc() { return settings.shortcut; }
 
   anyKeysHeld() { return this.heldRaw.size > 0 || this.fired.size > 0; }
+
+  reset() {
+    this.heldGroups.clear();
+    this.heldRaw.clear();
+    this.usedMods.clear();
+    this.fired.clear();
+    this.speculative = false;
+  }
 
   keydown(keycode) {
     const group = MOD_GROUPS.get(keycode);
@@ -1385,6 +1402,245 @@ function overlayCmd(payload) {
   }
 }
 
+// ----------------------------------------------------------- cursor trail --
+
+// While you are dictating, the last stretch of the cursor's path is drawn
+// behind it in the pill's colours. Three decisions make the rest of this
+// readable.
+//
+// One window per monitor, sized to that monitor, rather than one window
+// spanning the desktop. A window that crosses two displays of different scale
+// factors has one scale factor, so half of it is drawn at the wrong size; and
+// on Windows the desktop's bounding box is not the desktop — an L-shaped
+// arrangement leaves a rectangle of nothing that the window would still cover.
+//
+// The cursor is read here, from the OS, and not from mouse events in the
+// renderer. `screen` reports the same DIP space the window's bounds are in, so
+// subtracting the display's origin gives a coordinate the canvas can use with
+// no conversion, on every monitor, whatever each one is scaled to. It is also
+// the same reasoning the pill's own pointer watch is built on: a reading that
+// does not change because of what was done with the last one.
+//
+// Polling, because there is no cursor-moved event, and the windows are
+// click-through by design so they see no mouse events of their own.
+const TRAIL_POLL_MS = 16;
+// Kept in step with FADE_MS in trail.js: the renderer fades the line out over
+// that long, and this is when the window it was drawn in can be taken away.
+const TRAIL_FADE_MS = 500;
+const TRAIL_MIN_LENGTH = 150;
+const TRAIL_MAX_LENGTH = 2000;
+
+const MARKER_LAG_MS = 320;
+
+const trailWins = new Map();  // display id -> BrowserWindow
+const trailReady = new WeakSet();
+const trailPending = new WeakMap();
+let trailTimer = null;
+let trailHideTimer = null;
+let markerCount = 0;
+let cueCounter = null;
+let boxesOwed = 0;
+let armed = null;
+let layerInteractive = false;
+let dragging = false;
+let dragEndedAt = 0;
+
+const trailLength = () => Math.min(TRAIL_MAX_LENGTH,
+  Math.max(TRAIL_MIN_LENGTH, Number(settings.cursorTrailLength) || 650));
+
+function createTrailWindow(display) {
+  const win = new BrowserWindow({
+    ...display.bounds,
+    show: false, frame: false, transparent: true, resizable: false,
+    movable: false, alwaysOnTop: true, skipTaskbar: true, focusable: false,
+    hasShadow: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      backgroundThrottling: false,
+    },
+  });
+  trailPending.set(win, []);
+  // No `forward` here, unlike the pill. The pill gives the clicks back when
+  // the pointer is over it; this never does, and a window covering a whole
+  // monitor is the last thing that should be given the chance.
+  win.setIgnoreMouseEvents(true);
+  win.webContents.on('console-message', (event, level, message) => {
+    trace('trail console', String(message ?? (event && event.message) ?? ''));
+  });
+  // Below the pill's 'screen-saver' rather than level with it, so the trail
+  // cannot end up drawn over the thing it is keeping company.
+  win.setAlwaysOnTop(true, 'floating');
+  platform.tuneOverlay?.(win);
+  // The scheme and the length are sent again on every start, so this only
+  // matters for the window that is created and shown in the same breath.
+  win.webContents.once('did-finish-load', () => {
+    if (win.isDestroyed()) return;
+    trailReady.add(win);
+    const queued = trailPending.get(win) || [];
+    trailPending.delete(win);
+    win.webContents.send('trail:cmd', { theme: settings.theme, length: trailLength() });
+    for (const msg of queued) win.webContents.send('trail:cmd', msg);
+  });
+  win.loadFile(path.join(__dirname, 'renderer', 'trail.html'));
+  return win;
+}
+
+function trailCmd(win, payload) {
+  if (!win || win.isDestroyed()) return;
+  const msg = { theme: settings.theme, length: trailLength(), ...payload };
+  if (!trailReady.has(win)) {
+    trailPending.get(win)?.push(msg);
+    return;
+  }
+  win.webContents.send('trail:cmd', msg);
+}
+
+function eachTrailWindow(fn) {
+  for (const win of trailWins.values()) if (!win.isDestroyed()) fn(win);
+}
+
+// Made on first use rather than at startup, so the windows exist only for
+// someone who has asked for them.
+function ensureTrailWindows() {
+  for (const display of screen.getAllDisplays()) {
+    const existing = trailWins.get(display.id);
+    if (existing && !existing.isDestroyed()) continue;
+    trailWins.set(display.id, createTrailWindow(display));
+  }
+}
+
+function destroyTrailWindows() {
+  clearTimeout(trailHideTimer);
+  trailHideTimer = null;
+  boxesOwed = 0;
+  disarm();
+  for (const win of trailWins.values()) if (!win.isDestroyed()) win.destroy();
+  trailWins.clear();
+}
+
+// A display added, removed or rescaled changes what these windows are meant to
+// cover, and a window's size is fixed when it is made. Rebuilding is cheaper
+// to reason about than resizing each one and hoping the set still matches.
+function rebuildTrailWindows() {
+  const drawing = Boolean(trailTimer);
+  destroyTrailWindows();
+  if (drawing) startTrail();
+}
+
+// 'display-metrics-changed' also fires for things that leave the rectangle
+// alone — the work area shrinking because the taskbar came back, a colour
+// profile changing. Those are most of them, and rebuilding on one would drop
+// the line halfway through a sentence. The added and removed events carry no
+// metrics list, and always mean a rebuild.
+function onDisplaysChanged(_event, _display, changedMetrics) {
+  if (changedMetrics
+    && !changedMetrics.includes('bounds')
+    && !changedMetrics.includes('scaleFactor')) return;
+  rebuildTrailWindows();
+}
+
+const markersLive = () => Boolean(settings.pointMarkers && liveStream);
+
+function resetMarkers() {
+  markerCount = 0;
+  cueCounter = createCueCounter();
+  boxesOwed = 0;
+  disarm();
+}
+
+function setLayerInteractive(on) {
+  layerInteractive = on;
+  trace('marker layer interactive', String(on), `windows=${trailWins.size}`);
+  eachTrailWindow((win) => win.setIgnoreMouseEvents(!on));
+}
+
+function armNext() {
+  if (armed || boxesOwed < 1) return;
+  boxesOwed -= 1;
+  armed = { n: markerCount + 1 };
+  trace('arm', `n=${armed.n}`);
+  setLayerInteractive(true);
+  eachTrailWindow((win) => trailCmd(win, { cmd: 'arm', n: armed.n }));
+}
+
+function disarm() {
+  armed = null;
+  dragging = false;
+  setLayerInteractive(false);
+  eachTrailWindow((win) => trailCmd(win, { cmd: 'disarm' }));
+}
+
+function cancelDrawing() {
+  if (!armed && boxesOwed < 1) return false;
+  trace('cancelDrawing', `n=${armed ? armed.n : 'none'}`, `owed=${boxesOwed}`);
+  boxesOwed = 0;
+  disarm();
+  return true;
+}
+
+const drawingNow = () => dragging || Date.now() - dragEndedAt < MARKER_LAG_MS;
+
+function onLiveText(text) {
+  if (appState !== 'recording' || !settings.pointMarkers || !cueCounter) return;
+  const fresh = cueCounter.take(text);
+  const held = drawingNow();
+  trace('liveText', `fresh=${fresh.join(',') || 'none'}`, `held=${held}`, JSON.stringify(text));
+  if (!held) boxesOwed += fresh.length;
+  armNext();
+}
+
+function trailTick() {
+  if (!settings.cursorTrail) return;
+  const point = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(point);
+  const win = trailWins.get(display.id);
+  if (!win || win.isDestroyed()) return;
+  // Only the window the cursor is over is fed. The one it has just left keeps
+  // the line it already has and lets it run out on its own, which is what
+  // crossing between monitors should look like.
+  win.webContents.send('trail:point',
+    [point.x - display.bounds.x, point.y - display.bounds.y]);
+}
+
+function startTrail() {
+  if (!settings.cursorTrail && !markersLive()) return;
+  if (!trailTimer) destroyTrailWindows();
+  resetMarkers();
+  ensureTrailWindows();
+  eachTrailWindow((win) => {
+    trailCmd(win, { cmd: 'start' });
+    win.showInactive();
+  });
+  if (!trailTimer) trailTimer = setInterval(trailTick, TRAIL_POLL_MS);
+  trailTick();
+}
+
+// `fade` false takes the line away in the same frame. That is for the paths
+// where the recording is being undone rather than ended — a press that turned
+// out to be part of a combination, or the setting being switched off — and a
+// line easing out over half a second is exactly the trace those are supposed
+// not to leave. Every window is sent a fresh 'start' before it is shown again,
+// so hiding one mid-line cannot leave anything to reappear.
+function stopTrail(fade = true) {
+  if (trailTimer) { clearInterval(trailTimer); trailTimer = null; }
+  boxesOwed = 0;
+  disarm();
+  if (!trailWins.size) return;
+  clearTimeout(trailHideTimer);
+  trailHideTimer = null;
+  if (!fade) {
+    destroyTrailWindows();
+    return;
+  }
+  eachTrailWindow((win) => trailCmd(win, { cmd: 'stop' }));
+  // Hidden only once the line has faded. Hiding on the spot would cut it off
+  // mid-fade, which is the thing the fade exists to avoid.
+  trailHideTimer = setTimeout(() => {
+    trailHideTimer = null;
+    destroyTrailWindows();
+  }, TRAIL_FADE_MS);
+}
+
 // A small procedural microphone dot for the tray; replaced by assets/icon.png
 // when present.
 function trayIcon() {
@@ -1650,9 +1906,9 @@ function applyDictionary(text, entries) {
 // so "Google is a big company" typed into a document is left alone unless
 // "Google" is the first thing out of your mouth.
 
-// The three things a keyword can do. Anything else in the settings file — an
+// The four things a keyword can do. Anything else in the settings file — an
 // older build's type, a typo — reads as a URL, which is the harmless one.
-const KEYWORD_TYPES = new Set(['url', 'command', 'keys']);
+const KEYWORD_TYPES = new Set(['url', 'command', 'keys', 'alias']);
 const keywordType = (value) => (KEYWORD_TYPES.has(value) ? value : 'url');
 
 const GROUP_NAME_MAX = 40;
@@ -1674,8 +1930,9 @@ function matchKeyword(text) {
       word,
       type: keywordType(entry.type),
       target: String(entry.target),
-      // Drop whatever punctuation the model put after the keyword.
-      query: rest.replace(/^[^\p{L}\p{N}]+/u, '').trim(),
+      // Drop whatever punctuation the model put after the keyword, and the
+      // sentence punctuation it put at the end.
+      query: rest.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[.,!?;:…\s]+$/u, '').trim(),
     };
   }
   return best;
@@ -1781,6 +2038,10 @@ async function runKeyword(keyword) {
     }
     return `⌨ ${pretty} — ${prettyMacro(keyword.target)}`;
   }
+  if (keyword.type === 'alias') {
+    const verb = await deliver(keyword.target.replace(/%s/g, query).trim());
+    return `✓ ${verb} ${pretty}`;
+  }
   if (keyword.type === 'command') {
     const argv = splitArgs(keyword.target).map((arg) => arg.replace(/%s/g, query));
     if (!argv.length) throw new Error(`Keyword "${word}" has no command to run.`);
@@ -1863,6 +2124,7 @@ function startRecording() {
       liveStream = shouldStartNemotron(settings)
         ? openNemotronStream(nemotron.port)
         : openModulateStream(settings);
+      liveStream.onText = onLiveText;
     }
     catch (err) {
       showOverlay({ resting: false });
@@ -1873,6 +2135,7 @@ function startRecording() {
   appState = 'recording';
   showOverlay({ resting: false });
   ducker.duck();
+  startTrail();
   overlayCmd({ cmd: 'start', sounds: settings.sounds, liveStream: Boolean(liveStream) });
   broadcastState();
 }
@@ -1886,6 +2149,7 @@ function stopRecording() {
   // without waiting on the transcription.
   stopFollowingCursor();
   ducker.restore();
+  stopTrail();
   overlayCmd({ cmd: 'stop', sounds: settings.sounds });
   broadcastState();
 }
@@ -1916,6 +2180,7 @@ function cancelEverything() {
   abortLiveStream();
   stopFollowingCursor();
   ducker.restore();
+  stopTrail();
   appState = 'idle';
   // The overlay stops capturing and discards the audio on this command, so no
   // 'stop' is sent and handleAudio is never reached for a cancelled recording.
@@ -1938,6 +2203,7 @@ function onShortcutAbort() {
   abortLiveStream();
   stopFollowingCursor();
   ducker.restore();
+  stopTrail(false);
   appState = 'idle';
   clearTimeout(hideTimer);
   overlayCmd({ cmd: 'abort' });
@@ -1961,11 +2227,12 @@ function finishOverlay(payload, delay) {
   settleOverlaySoon(delay);
 }
 
-// Also unwinds the follow and the ducking: a failed startCapture (mic
-// unavailable) lands here without ever passing through stopRecording.
+// Also unwinds the follow, the ducking and the trail: a failed startCapture
+// (mic unavailable) lands here without ever passing through stopRecording.
 function backToIdle() {
   stopFollowingCursor();
   ducker.restore();
+  stopTrail();
   appState = 'idle';
   broadcastState();
 }
@@ -2264,6 +2531,9 @@ ipcMain.handle('settings:get', () => {
     dictionary: settings.dictionary,
     overlayFollow: settings.overlayFollow,
     overlayAlways: settings.overlayAlways,
+    cursorTrail: settings.cursorTrail,
+    cursorTrailLength: trailLength(),
+    pointMarkers: settings.pointMarkers,
     skipChunking: settings.skipChunking,
     keepMicWarm: settings.keepMicWarm,
     restoreClipboard: settings.restoreClipboard,
@@ -2350,6 +2620,33 @@ ipcMain.handle('settings:set', (_e, partial) => {
     // next time you dictate is a switch you cannot tell you have flicked.
     if (appState === 'idle') restOverlay();
   }
+  if (partial.cursorTrail !== undefined) {
+    settings.cursorTrail = Boolean(partial.cursorTrail);
+    // Shown or taken away on the spot, the same as the resting pill: a switch
+    // whose effect you only see the next time you dictate is a switch you
+    // cannot tell you have flicked. Switching it off while a line is on screen
+    // takes it straight away rather than fading it, because the fade means
+    // "that dictation is over" and this one is not.
+    if (appState === 'recording') {
+      if (settings.cursorTrail) startTrail();
+      else stopTrail(false);
+    }
+    // Nothing to keep open for a feature that is off, and these are a window
+    // per monitor.
+    if (!settings.cursorTrail && !settings.pointMarkers) destroyTrailWindows();
+  }
+  if (partial.pointMarkers !== undefined) {
+    settings.pointMarkers = Boolean(partial.pointMarkers);
+    if (appState === 'recording') {
+      if (markersLive()) startTrail();
+      else if (!settings.cursorTrail) stopTrail(false);
+    }
+    if (!settings.cursorTrail && !settings.pointMarkers) destroyTrailWindows();
+  }
+  if (partial.cursorTrailLength !== undefined) {
+    settings.cursorTrailLength = Number(partial.cursorTrailLength) || 650;
+    eachTrailWindow((win) => trailCmd(win, {}));
+  }
   if (partial.overlayFollow !== undefined) {
     settings.overlayFollow = Boolean(partial.overlayFollow);
     // Turning following back on drops the pinned point rather than keeping it
@@ -2404,7 +2701,11 @@ ipcMain.handle('settings:set', (_e, partial) => {
     else ducker.stop();
   }
   // Repaint a visible overlay straight away, so picking a scheme shows itself.
-  if (partial.theme !== undefined) overlayCmd({ cmd: 'theme' });
+  // The trail is painted from the same scheme, so it is repainted from here too.
+  if (partial.theme !== undefined) {
+    overlayCmd({ cmd: 'theme' });
+    eachTrailWindow((win) => trailCmd(win, {}));
+  }
   saveSettings();
   broadcastState();
 });
@@ -2412,6 +2713,26 @@ ipcMain.handle('settings:set', (_e, partial) => {
 // Sent, not invoked: these arrive many times a second during a drag and none of
 // them has an answer worth waiting for.
 ipcMain.on('overlay:drag', (_e, phase) => overlayDrag(phase));
+
+ipcMain.on('trail:drag', (_e, phase) => {
+  trace('drag', String(phase), `armed=${armed ? armed.n : 'none'}`);
+  if (!armed) return;
+  if (phase === 'start') {
+    dragging = true;
+    return;
+  }
+  dragging = false;
+  dragEndedAt = Date.now();
+});
+
+ipcMain.on('trail:box', (_e, box) => {
+  if (!armed) return;
+  trace('box', JSON.stringify(box));
+  markerCount = armed.n;
+  dragEndedAt = Date.now();
+  disarm();
+  armNext();
+});
 
 // Emptied on the spot rather than marked for deletion: the point of the button
 // is that the transcripts are gone, so the file goes with them.
@@ -2475,6 +2796,12 @@ if (!gotLock) {
 
     createSettingsWindow();
     createOverlayWindow();
+    // A trail window is the size of one monitor, and that is fixed when the
+    // window is made. Any change to the set of monitors, or to how one of them
+    // is scaled, means the ones that exist no longer fit.
+    for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) {
+      screen.on(event, onDisplaysChanged);
+    }
     createTray();
     startLocalEngine();
     if (settings.duck) ducker.start();
@@ -2490,7 +2817,7 @@ if (!gotLock) {
       // when there was something to cancel, so it stays an ordinary Escape the
       // rest of the time — and it is observed rather than swallowed either way,
       // so the focused app still receives it.
-      if (e.keycode === UiohookKey.Escape && cancelEverything()) return;
+      if (e.keycode === UiohookKey.Escape && (cancelDrawing() || cancelEverything())) return;
       matcher.keydown(e.keycode);
     });
     uIOhook.on('keyup', (e) => {
@@ -2501,6 +2828,12 @@ if (!gotLock) {
       else matcher.keyup(e.keycode);
     });
     uIOhook.start();
+    for (const event of ['lock-screen', 'unlock-screen', 'suspend', 'resume']) {
+      powerMonitor.on(event, () => {
+        trace('session', event, 'heldRaw=[' + [...matcher.heldRaw] + ']');
+        matcher.reset();
+      });
+    }
   });
 
   app.on('window-all-closed', () => { /* keep running in the tray */ });

@@ -1,0 +1,38 @@
+/* The colour schemes, shared by everything the app paints outside its own
+   windows. The pill and the cursor trail are two canvases in two processes,
+   and both read the --bar-* values back out of the computed style rather
+   than keeping a copy of them — so a scheme is defined once, here, whichever
+   way any one of its colours ends up being painted. */
+body {
+  --pill-bg: rgba(18, 20, 26, 0.92);
+  --pill-border: rgba(255, 255, 255, 0.10);
+  /* Small enough to fit the 10px the window leaves around the pill. A wider
+     one is not a softer shadow here, it is a clipped one: the window ends
+     where the margin ends, and everything past that is cut off square. */
+  --pill-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  --border-recording: rgba(232, 116, 76, 0.55);
+  --border-done: rgba(94, 200, 132, 0.6);
+  --border-error: rgba(226, 92, 92, 0.6);
+  --label: rgba(255, 255, 255, 0.72);
+  --label-done: #7fdca4;
+  --label-error: #ef9a9a;
+  --bar-top: #f0a878;
+  --bar-bottom: #d8825a;
+  --bar-processing: rgba(216, 130, 90, 0.55);
+  --bar-glow: none;
+}
+body[data-theme="synthwave"] {
+  --pill-bg: rgba(37, 13, 66, 0.95);
+  --pill-border: rgba(157, 78, 221, 0.38);
+  --pill-shadow: 0 2px 6px rgba(0, 0, 0, 0.55), 0 0 8px rgba(255, 46, 151, 0.30);
+  --border-recording: rgba(255, 46, 151, 0.75);
+  --border-done: rgba(0, 245, 212, 0.7);
+  --border-error: rgba(255, 56, 100, 0.75);
+  --label: rgba(233, 216, 255, 0.85);
+  --label-done: #5ff5e0;
+  --label-error: #ff6b8a;
+  --bar-top: #22e0ff;
+  --bar-bottom: #ff2e97;
+  --bar-processing: rgba(157, 78, 221, 0.62);
+  --bar-glow: rgba(255, 46, 151, 0.55);
+}

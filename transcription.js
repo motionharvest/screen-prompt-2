@@ -197,6 +197,10 @@ function openModulateStream(settings, WebSocketImpl = globalThis.WebSocket) {
     if (err) rejectDone(err);
     else resolveDone(text);
   };
+  const emit = () => {
+    if (typeof api.onText !== 'function') return;
+    try { api.onText(parts.join(' ').trim()); } catch {}
+  };
 
   attach(ws, 'open', () => {
     opened = true;
@@ -209,7 +213,7 @@ function openModulateStream(settings, WebSocketImpl = globalThis.WebSocket) {
     try { msg = JSON.parse(payloadText(messagePayload(event))); } catch { return; }
     if (msg.type === 'utterance') {
       const t = String(msg.utterance && msg.utterance.text || '').trim();
-      if (t) parts.push(t);
+      if (t) { parts.push(t); emit(); }
     } else if (msg.type === 'done') {
       finish(null, parts.join(' ').trim());
     } else if (msg.type === 'error') {
@@ -222,8 +226,9 @@ function openModulateStream(settings, WebSocketImpl = globalThis.WebSocket) {
     finish(new Error(streamingCloseMessage(closeCode(event))));
   });
 
-  return {
+  const api = {
     url: url.toString(),
+    onText: null,
     send(buf) {
       if (settled || ending || !buf || !buf.byteLength) return;
       if (opened) ws.send(buf);
@@ -239,6 +244,7 @@ function openModulateStream(settings, WebSocketImpl = globalThis.WebSocket) {
       finish(new Error('cancelled'));
     },
   };
+  return api;
 }
 
 function eventText(msg) {
@@ -273,6 +279,17 @@ function openNemotronStream(port, WebSocketImpl = globalThis.WebSocket) {
     else resolveDone(text);
   };
   const transcript = () => (parts.join(' ').trim() || partial).trim();
+  const live = () => [...parts, partial].join(' ').replace(/\s+/g, ' ').trim();
+  const mergePartial = (prev, next) => {
+    if (!prev) return next;
+    if (next.startsWith(prev)) return next;
+    if (prev.startsWith(next)) return prev;
+    return `${prev} ${next}`;
+  };
+  const emit = () => {
+    if (typeof api.onText !== 'function') return;
+    try { api.onText(live()); } catch {}
+  };
   const flushAudio = () => {
     opened = true;
     for (const buf of queued) ws.send(buf);
@@ -297,11 +314,12 @@ function openNemotronStream(port, WebSocketImpl = globalThis.WebSocket) {
     const type = String(msg && msg.type || '');
     if (type === 'conversation.item.input_audio_transcription.delta') {
       const t = eventText(msg);
-      if (t) partial = t;
+      if (t) { partial = mergePartial(partial, t); emit(); }
     } else if (type === 'conversation.item.input_audio_transcription.completed') {
       const t = eventText(msg) || partial;
       if (t) parts.push(t);
       partial = '';
+      if (t) emit();
     } else if (type === 'input_audio_buffer.committed') {
       finish(null, transcript());
     } else if (type === 'error') {
@@ -316,8 +334,9 @@ function openNemotronStream(port, WebSocketImpl = globalThis.WebSocket) {
     else finish(new Error('Nemotron streaming closed'));
   });
 
-  return {
+  const api = {
     url,
+    onText: null,
     send(buf) {
       if (settled || ending || !buf || !buf.byteLength) return;
       if (opened) ws.send(buf);
@@ -333,6 +352,7 @@ function openNemotronStream(port, WebSocketImpl = globalThis.WebSocket) {
       finish(new Error('cancelled'));
     },
   };
+  return api;
 }
 
 async function transcribeCloud(wavPath, settings, fetchImpl = fetch) {

@@ -165,11 +165,12 @@ const LOGIN_ITEM_NAME = 'Screen Prompt 2';
 
 // Windows runs the login item as a bare command line, so an unpackaged app has
 // to spell out electron.exe plus this directory — `process.execPath` alone
-// would launch Electron with no app to run. Paths are quoted because the
-// registry value is one string that Windows re-splits on spaces.
+// would launch Electron with no app to run. The path is passed bare because
+// Electron quotes each argument itself when it writes the registry value;
+// quoting it here as well puts literal quote marks inside the path.
 function loginItemArgs() {
   const args = ['--hidden'];
-  if (!app.isPackaged) args.unshift(`"${ROOT}"`);
+  if (!app.isPackaged) args.unshift(ROOT);
   return args;
 }
 

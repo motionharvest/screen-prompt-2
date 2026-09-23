@@ -266,6 +266,7 @@ Electron shell + Python sidecar:
 | Global shortcut | `uiohook-napi` in main | raw key-down/up events, so hold-to-record and lone-modifier shortcuts work — Electron's own `globalShortcut` can't do either |
 | Mic capture, spectrum, tones | overlay renderer (Web Audio) | records straight at 16 kHz mono, `AnalyserNode` drives the waveform line |
 | Transcription | `asr/server.py` (onnx-asr), `nemo-speech serve`, or a cloud POST | Local Parakeet TDT 0.6B v2 + Silero VAD for recordings over ~25 s (VAD skippable via “Skip chunking” for speed). Local Nemotron 3.5 ASR Streaming 0.6B via NVIDIA's `nemo-speech` CLI (`ws://127.0.0.1:18765/v1/audio/transcriptions/realtime`, 16 kHz PCM while you talk). Cloud: Mistral Voxtral Mini Transcribe V2 (`/v1/audio/transcriptions`) or Modulate multilingual — fast batch (`/api/velma-2-stt-batch-multilingual-vfast`, the default), live streaming (`/api/velma-2-stt-streaming-multilingual-vfast`), or full batch (`/api/velma-2-stt-batch`). Python sidecar starts only for local Parakeet. |
+| Cursor trail | one window per monitor (`renderer/trail.js`) | transparent, click-through, fed the cursor's position from main so each monitor's canvas gets its own coordinates at its own scale — see [The cursor trail](#the-cursor-trail) |
 | Per-OS behaviour | `platform/*.js` | one adapter per platform, see below |
 
 Electron was chosen over Tauri because the audio pipeline (capture, spectrum,
@@ -333,7 +334,7 @@ dictation takes rather than five bins of related switches:
 | **Processing** | what the transcript becomes before it goes anywhere | one engine picker (Parakeet or Nemotron on this device, Mistral or Modulate in the cloud) with that engine's own controls beneath it: chunking, the install note, the API key, the Modulate mode; then tidying and the dictionary |
 | **Keywords** | the words that make a dictation do something instead of becoming text | the keyword list, in named groups once you make them |
 | **History** | what you have already dictated | words, words per minute, tidy/dictionary fixes, a year of days, the last 30 days of transcripts |
-| **App** | how the app behaves and announces itself, rather than any one dictation | colours, sounds, keeping the pill on screen and where it sits, keep the mic ready, duck other audio, start at login |
+| **App** | how the app behaves and announces itself, rather than any one dictation | colours, sounds, keeping the pill on screen and where it sits, the cursor trail, keep the mic ready, duck other audio, start at login |
 
 Every setting belongs to exactly one stage of that journey, which is what makes
 the placement decidable rather than a matter of taste; where a tab holds several
@@ -396,6 +397,41 @@ click meant for the window underneath — except while the pointer is actually
 over it, which is the moment you are reaching for it anyway. And a pinned spot
 is pulled back onto the nearest screen if the monitor it was pinned to is
 unplugged or rearranged, so it cannot strand itself off the desktop.
+
+## The cursor trail
+
+**App → Cursor trail** draws the last stretch of the cursor's path behind it
+for as long as the app is listening, in the same two colours the pill's
+spectrum uses: the bright one at the cursor, shading to the darker one as the
+line runs out. It is the pill's readout a second time, put where you are
+already looking rather than at the edge of the screen — useful when the pill is
+on another monitor, or parked somewhere you are not watching.
+
+**Length** is how many pixels of path are kept, from 150 to 2000, and 650 by
+default. It is measured *along the line*, not as a distance from the cursor, so
+a loop or a scribble costs what it actually drew. The line tapers and fades
+toward its far end, and when you stop talking the whole thing fades out over
+about four tenths of a second rather than vanishing between two frames.
+
+It is off by default, because it draws over every window you own.
+
+Three things about how it is built are worth knowing, because they are what
+make it safe to leave on. It is one transparent window per monitor, each the
+size of that monitor, rather than one window over the whole desktop: a window
+spanning two displays has a single scale factor, so half of it would be drawn
+at the wrong size, and an L-shaped arrangement of screens has a bounding box
+with a hole in it. Every one of those windows is click-through and never
+focusable, and unlike the pill it never asks for the clicks back — so it cannot
+swallow one, and it cannot take your keyboard focus away from whatever you are
+dictating into. And the cursor is read from the OS in the main process rather
+than from mouse events in those windows, which is what lets a point be handed
+to the right monitor's canvas in that monitor's own coordinates, on a desktop
+where each screen is scaled differently.
+
+The windows are made the first time you record with the setting on, and thrown
+away when you switch it off. Crossing between monitors mid-sentence leaves the
+line you drew on the one you left to run out on its own, which is what that
+should look like.
 
 ## History
 

@@ -98,21 +98,33 @@ function showDuck(enabled, reduction) {
   $('duck-row').classList.toggle('off', !enabled);
 }
 
+// How much of the cursor's path is kept behind it, in pixels. The number is
+// shown because "long enough to see where you have been, short enough not to
+// become a drawing" is a different number on a 4K monitor than on a laptop,
+// and the only way to pick it is to watch it.
+function showCursorTrail(enabled, length) {
+  $('trail-length').value = length;
+  $('trail-length-value').textContent = `${length} px`;
+  $('trail-length').disabled = !enabled;
+  $('trail-length-row').classList.toggle('off', !enabled);
+}
+
 // ---------------------------------------------------------------- keywords --
 
 let keywords = [];
 let keywordGroups = [];
 
-// The three things a keyword can do. Anything else in the settings file reads
+// The four things a keyword can do. Anything else in the settings file reads
 // as a URL, which is the harmless one — the same rule main applies.
-const KEYWORD_TYPES = ['url', 'command', 'keys'];
+const KEYWORD_TYPES = ['url', 'command', 'keys', 'alias'];
 
-// Only the two types that have a single target field need one. The command
+// Only the three types that have a single target field need one. The command
 // example is replaced at init with one that exists on this OS — a Windows path
 // shown as the hint on a Mac is worse than no hint.
 const PLACEHOLDER = {
   url: 'https://www.google.com/search?q=%s',
   command: 'notepad.exe %s',
+  alias: '/talk %s',
 };
 
 // What the field says between the click and the keyboard actually being held.
@@ -639,6 +651,7 @@ function keywordRow(index, group) {
       <option value="url">Open a URL</option>
       <option value="command">Run a command</option>
       <option value="keys">Run a macro</option>
+      <option value="alias">Alias</option>
     </select>
     <input type="text" class="kw-target" spellcheck="false">
     <button class="kw-del" title="Remove">&times;</button>
@@ -874,6 +887,9 @@ async function init() {
   showEngine(engineOf(state.settings), state.settings.modulateMode);
   $('overlay-follow').checked = state.settings.overlayFollow;
   $('overlay-always').checked = state.settings.overlayAlways;
+  $('cursor-trail').checked = state.settings.cursorTrail;
+  showCursorTrail(state.settings.cursorTrail, state.settings.cursorTrailLength);
+  $('point-markers').checked = state.settings.pointMarkers;
   showRestoreClipboard(state.settings.output);
   showPressEnter(state.settings.output);
   keywords = (state.settings.keywords || []).map((k) => ({ ...k }));
@@ -1005,6 +1021,21 @@ $('duck-level').addEventListener('change', (e) => {
   window.api.setSettings({ duckLevel: reductionToLevel(Number(e.target.value)) });
 });
 $('sounds').addEventListener('change', (e) => window.api.setSettings({ sounds: e.target.checked }));
+$('cursor-trail').addEventListener('change', (e) => {
+  showCursorTrail(e.target.checked, Number($('trail-length').value));
+  window.api.setSettings({ cursorTrail: e.target.checked });
+});
+// Same split as the ducking slider: 'input' for the readout under your thumb,
+// 'change' to persist once it is dropped, so a drag is one save and not fifty.
+$('trail-length').addEventListener('input', (e) => {
+  $('trail-length-value').textContent = `${e.target.value} px`;
+});
+$('trail-length').addEventListener('change', (e) => {
+  window.api.setSettings({ cursorTrailLength: Number(e.target.value) });
+});
+$('point-markers').addEventListener('change', (e) => {
+  window.api.setSettings({ pointMarkers: e.target.checked });
+});
 $('overlay-follow').addEventListener('change', (e) => window.api.setSettings({ overlayFollow: e.target.checked }));
 $('overlay-always').addEventListener('change', (e) => window.api.setSettings({ overlayAlways: e.target.checked }));
 $('startup').addEventListener('change', (e) => window.api.setSettings({ launchAtStartup: e.target.checked }));

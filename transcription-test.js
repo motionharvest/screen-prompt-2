@@ -434,6 +434,120 @@ async function main() {
     assert.strictEqual(await pending, 'partial text');
   });
 
+  await check('nemotron stream reports the transcript as it grows', async () => {
+    let ws;
+    const WebSocketImpl = function WebSocketImpl(url) {
+      ws = fakeSocket(url);
+      return ws;
+    };
+    const stream = transcription.openNemotronStream(18765, WebSocketImpl);
+    const seen = [];
+    stream.onText = (text) => seen.push(text);
+    await Promise.resolve();
+    const delta = (text) => ws.emit('message', {
+      data: JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.delta',
+        delta: text,
+      }),
+    });
+    delta('move');
+    delta('move this');
+    ws.emit('message', {
+      data: JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.completed',
+        transcript: 'move this',
+      }),
+    });
+    delta('over here');
+    assert.deepStrictEqual(seen, ['move', 'move this', 'move this', 'move this over here']);
+  });
+
+  await check('nemotron deltas that carry only the new words are joined up', async () => {
+    let ws;
+    const WebSocketImpl = function WebSocketImpl(url) {
+      ws = fakeSocket(url);
+      return ws;
+    };
+    const stream = transcription.openNemotronStream(18765, WebSocketImpl);
+    const seen = [];
+    stream.onText = (text) => seen.push(text);
+    await Promise.resolve();
+    const delta = (text) => ws.emit('message', {
+      data: JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.delta',
+        delta: text,
+      }),
+    });
+    delta('move');
+    delta('this');
+    delta('over here');
+    assert.deepStrictEqual(seen, ['move', 'move this', 'move this over here']);
+    const pending = stream.end();
+    ws.emit('message', { data: JSON.stringify({ type: 'input_audio_buffer.committed' }) });
+    assert.strictEqual(await pending, 'move this over here');
+  });
+
+  await check('a delta repeated verbatim does not say the words twice', async () => {
+    let ws;
+    const WebSocketImpl = function WebSocketImpl(url) {
+      ws = fakeSocket(url);
+      return ws;
+    };
+    const stream = transcription.openNemotronStream(18765, WebSocketImpl);
+    const seen = [];
+    stream.onText = (text) => seen.push(text);
+    await Promise.resolve();
+    const delta = (text) => ws.emit('message', {
+      data: JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.delta',
+        delta: text,
+      }),
+    });
+    delta('put this here');
+    delta('put this here');
+    delta('put this');
+    assert.deepStrictEqual(seen,
+      ['put this here', 'put this here', 'put this here']);
+  });
+
+  await check('modulate stream reports each utterance as it lands', async () => {
+    let ws;
+    const WebSocketImpl = function WebSocketImpl(url) {
+      ws = fakeSocket(url);
+      return ws;
+    };
+    const stream = transcription.openModulateStream(streamingSettings, WebSocketImpl);
+    const seen = [];
+    stream.onText = (text) => seen.push(text);
+    await Promise.resolve();
+    const utterance = (text) => ws.emit('message', {
+      data: JSON.stringify({ type: 'utterance', utterance: { text } }),
+    });
+    utterance('put this');
+    utterance('over here');
+    assert.deepStrictEqual(seen, ['put this', 'put this over here']);
+  });
+
+  await check('a listener that throws does not break the stream', async () => {
+    let ws;
+    const WebSocketImpl = function WebSocketImpl(url) {
+      ws = fakeSocket(url);
+      return ws;
+    };
+    const stream = transcription.openNemotronStream(18765, WebSocketImpl);
+    stream.onText = () => { throw new Error('listener blew up'); };
+    await Promise.resolve();
+    const pending = stream.end();
+    ws.emit('message', {
+      data: JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.completed',
+        transcript: 'still fine',
+      }),
+    });
+    ws.emit('message', { data: JSON.stringify({ type: 'input_audio_buffer.committed' }) });
+    assert.strictEqual(await pending, 'still fine');
+  });
+
   try { fs.unlinkSync(wav); } catch { /* leftover of a failed run */ }
 
   console.log(failed ? `${failed} failed` : 'all passed');
