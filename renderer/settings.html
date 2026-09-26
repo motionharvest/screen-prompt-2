@@ -207,14 +207,30 @@
     .kw, .dict {
       display: grid; gap: 8px; align-items: center; margin-bottom: 8px;
     }
-    .kw { grid-template-columns: auto minmax(90px, 130px) minmax(120px, 150px) minmax(0, 1fr) auto; }
+    .kw {
+      grid-template-columns: auto minmax(120px, 150px) minmax(0, 1fr) auto;
+      background: var(--inset); border: 1px solid var(--line); border-radius: 8px;
+      padding: 10px 8px 10px 4px; margin-bottom: 10px;
+    }
+    .kw .kw-grip { grid-column: 1; grid-row: 1 / 3; }
+    .kw.macro .kw-grip { grid-row: 1 / 4; }
+    .kw .kw-desc { grid-column: 2 / -1; grid-row: 1; }
+    .kw .kw-type { grid-column: 2; grid-row: 2; }
+    .kw .kw-target { grid-column: 3; grid-row: 2; }
+    .kw .kw-del { grid-column: -2 / -1; grid-row: 2; }
     .dict { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; }
     @container (max-width: 600px) {
-      .kw { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto; }
-      .kw.keys { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto auto; }
-      .kw .kw-del { grid-column: 4; grid-row: 1; }
-      .kw .kw-target { grid-column: 1 / -1; grid-row: 2; }
+      .kw { grid-template-columns: auto minmax(0, 1fr) auto; }
+      .kw.keys { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+      .kw .kw-grip, .kw.macro .kw-grip { grid-row: 1 / 5; }
+      .kw .kw-target { grid-column: 2 / -1; grid-row: 3; }
     }
+    .kw textarea.kw-desc {
+      background: var(--field); border: 1px solid var(--line-strong); border-radius: 6px;
+      color: var(--text); font-family: inherit; font-size: 12.5px; padding: 7px 9px;
+      min-width: 0; width: 100%; resize: vertical; line-height: 1.4;
+    }
+    .kw textarea.kw-desc:focus { outline: none; border-color: var(--accent); }
     .kw input[type="text"], .kw select, .dict input[type="text"], .field input {
       background: var(--field); border: 1px solid var(--line-strong); border-radius: 6px;
       color: var(--text); font-family: inherit; font-size: 12.5px; padding: 7px 9px;
@@ -235,22 +251,18 @@
        number, because the wide layout has a column that the narrow one folds
        away and they belong in the last two either way. */
     .kw.keys {
-      grid-template-columns:
-        auto minmax(90px, 130px) minmax(120px, 150px) minmax(0, 1fr) auto auto;
+      grid-template-columns: auto minmax(120px, 150px) minmax(0, 1fr) auto auto;
     }
-    .kw.keys .kw-plus { grid-column: -3 / -2; grid-row: 1; }
-    .kw.keys .kw-del { grid-column: -2 / -1; grid-row: 1; }
+    .kw.keys .kw-plus { grid-column: -3 / -2; grid-row: 2; }
+    .kw.keys .kw-del { grid-column: -2 / -1; grid-row: 2; }
     /* Once it is a list, every step carries its own +, and a second one on the
        row would have no position to mean. */
     .kw.macro .kw-plus { display: none; }
     .kw.macro .kw-target { display: none; }
-    /* Full width, but on whichever row is left. Naming a row would put it on
+    /* Under the action, level with the fields above it, on whichever row is left. Naming a row would put it on
        top of the target field in the narrow layout, where that field has
        already been moved down to a line of its own. */
-    .kw .kw-macro { grid-column: 1 / -1; }
-    .kw.macro .kw-macro {
-      border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px 10px;
-    }
+    .kw .kw-macro { grid-column: 2 / -1; }
     .kw-plus, .step-plus {
       background: none; border: none; color: var(--dim); cursor: pointer;
       padding: 2px 6px; font-size: 16px; line-height: 1;
@@ -344,8 +356,8 @@
     }
     .kw-grip:hover { color: var(--text); }
     .kw.dragging { opacity: 0.45; }
-    .kw.drop-before { box-shadow: inset 0 2px 0 -0.5px var(--accent); }
-    .kw.drop-after { box-shadow: inset 0 -2px 0 -0.5px var(--accent); }
+    .kw.drop-before { box-shadow: 0 -6px 0 -4px var(--accent); }
+    .kw.drop-after { box-shadow: 0 6px 0 -4px var(--accent); }
     .kw-group-head.drop-into, .kw-group-body.drop-into {
       outline: 1px dashed var(--accent); outline-offset: 3px; border-radius: 6px;
     }
@@ -776,14 +788,26 @@
     <div class="panel" id="panel-keywords" role="tabpanel" aria-labelledby="tab-keywords" hidden>
       <div class="panel-head">
         <h2>Keywords</h2>
-        <p>Words that make a dictation do something instead of becoming text.</p>
+        <p>Actions a dictation can ask for instead of becoming text.</p>
       </div>
       <div class="grid">
         <section class="card wide">
           <h3>Keywords</h3>
+          <div class="field" style="margin: 0 0 12px;">
+            <label class="t" for="typesafe-key">TypeSafe API key</label>
+            <div class="d"><a href="https://console.typesafe.ai/" target="_blank" rel="noreferrer">Get a key at console.typesafe.ai</a></div>
+            <input type="password" id="typesafe-key" autocomplete="off" spellcheck="false">
+            <div class="d" id="typesafe-missing" hidden>Without a key, keywords never run and everything you say is typed.</div>
+          </div>
           <div class="hint">
-            Say the keyword first and the rest becomes the query — “Google, what is
-            the capital of Indiana”. <code>%s</code> marks where the query goes; with
+            Describe what each keyword does, in plain words — “Searches Google for
+            whatever the user asks about”. After every dictation, TypeSafe's Jev
+            model compares what you said with these descriptions and decides
+            whether you asked for one of them or were dictating text. You can
+            phrase it however you like: “look up the capital of Indiana” runs the
+            search, and the words it should act on become the query.
+            The transcript is sent to TypeSafe for this; with no keywords, nothing
+            is sent. <code>%s</code> marks where the query goes; with
             no <code>%s</code> a URL just gets it appended. Commands run without a
             shell, so the query stays one argument no matter what is in it. A
             keyboard macro ignores the query and works the keyboard instead. An
@@ -868,7 +892,7 @@
           <div class="btn-row">
             <button id="keyword-add">Add keyword</button>
             <button id="group-add" title="Groups are a way of reading the list; every keyword works the same in or out of one">New group</button>
-            <button id="launch-add" title="Adds a Launch keyword that starts an app by its spoken name">Add the app launcher</button>
+            <button id="launch-add" title="Adds a keyword that starts an app by its spoken name">Add the app launcher</button>
           </div>
         </section>
       </div>

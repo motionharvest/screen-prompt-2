@@ -70,9 +70,10 @@ no figures — just voice to text.
   `Claude`, and every transcript from then on says Claude. Whole words and
   phrases, case ignored when listening, replacement spelled exactly as you
   wrote it. See [Dictionary](#dictionary).
-- **Keywords** — say a keyword first and the rest of the sentence becomes a
-  query: “Google, what is the capital of Indiana” opens the search instead of
-  typing the words. Each keyword opens a URL, runs a command, or runs a
+- **Keywords** — describe an action in plain words, and TypeSafe's Jev model
+  decides after each dictation whether you asked for it: “look up the capital
+  of Indiana” opens the search instead of typing the words. Each keyword opens
+  a URL, runs a command, or runs a
   **keyboard macro** into whatever window you were in — a list of key
   combinations and waits, each one recorded by pressing it. `%s` marks where
   the query goes. See [Keywords](#keywords).
@@ -492,16 +493,26 @@ The rules, all of which `npm test` covers:
   the middle of typing; it is saved, and it never matches.
 
 The dictionary runs after the tidying and before the keywords, so a stutter is
-collapsed before it is looked up, and a keyword still fires when the model
-misheard its name.
+collapsed before it is looked up, and Jev reads the corrected words.
 
 ## Keywords
 
-A keyword only fires when it is the **first** thing in what you said, and only
-on a word boundary — so “Google, what is …” searches, while “I asked Google
-about it” and “Googleplex” are transcribed as normal. The longest matching
-keyword wins, so `search youtube` beats `search`. When a keyword fires the text
-is not copied or pasted: the words were an instruction, not something to type.
+A keyword is a description of what it does, such as “Searches Google for
+whatever the user asks about” or “Changes the current model inside Claude Code
+to Fable”. After every dictation the transcript and the descriptions go to
+TypeSafe's Jev model in one request, which asks two things. The first is
+whether you were dictating text or asking for one of the described actions.
+The second picks the words the action should act on, chosen from the stretches
+of what you said that run to its end, so “please search for tacos” gives the
+query “tacos”. An action runs only when Jev gives it a probability of at least
+0.6; anything less is typed as dictation. When a keyword fires the text is not
+copied or pasted: the words were an instruction, not something to type.
+
+Keywords need a TypeSafe API key, entered at the top of the Keywords tab. With
+no key, or no keywords, nothing is sent and every dictation is typed. If the
+request fails, the dictation is typed and the overlay says why keywords did not
+run. A keyword saved by an older version, which only had a spoken word, is read
+as the description “The user says ‘word’” until you rewrite it.
 
 | Type | Target | Result of “Google, capital of Indiana” |
 | --- | --- | --- |
@@ -651,7 +662,8 @@ sent are passed through rather than swallowed, so a recording can never capture
 what a keyword had just pressed.
 
 **Launching apps** is the common case, so a launcher ships with it. Add a
-`Launch` keyword of type *Run a command* and “Launch Spotify” starts Spotify:
+keyword of type *Run a command* described as starting an application the user
+names, and “Launch Spotify” starts Spotify:
 
 ```sh
 # Windows
@@ -666,9 +678,7 @@ launcher** on the Keywords tab, and **How a command runs** there explains the
 rules above. Both scripts take the spoken
 name as bound arguments rather than interpolating it into a command string, so
 nothing you say is ever parsed as shell. Both match on a partial name with the
-shortest match winning, so “Launch Word” prefers Word over WordPad. Prefer
-`Launch` over `Open` as the keyword: “Open the door” would be swallowed as a
-failed app lookup rather than transcribed.
+shortest match winning, so “Launch Word” prefers Word over WordPad.
 
 Where they look:
 

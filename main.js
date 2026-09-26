@@ -25,6 +25,7 @@ const {
 const {
   countWords, countFixes, addClip, pruneDays, seedFromHistory, summarize,
 } = require('./stats');
+const { typesafeApiKey, keywordEntry, classifyIntent } = require('./intent');
 const { createCueCounter } = require('./markers');
 
 // ---------------------------------------------------------------- settings --
@@ -50,7 +51,7 @@ const DEFAULT_SETTINGS = {
   // minute or two. Turn this on to always transcribe in one pass and skip the
   // chunking, trading a small quality risk on very long clips for speed.
   skipChunking: false,
-  keywords: [],              // [{word, type: 'url'|'command'|'keys'|'alias', target, group}]
+  keywords: [],              // [{description, type: 'url'|'command'|'keys'|'alias', target, group}]
   keywordGroups: [],
   // Words the model reliably mishears, and how they should be spelled instead.
   dictionary: [],            // [{from, to}]
@@ -84,6 +85,7 @@ const DEFAULT_SETTINGS = {
   modulateMode: 'fast',      // 'fast' | 'streaming' | 'multilingual'
   mistralApiKey: '',
   modulateApiKey: '',
+  typesafeApiKey: '',
   localModel: 'parakeet',    // 'parakeet' | 'nemotron'
   model: 'nemo-parakeet-tdt-0.6b-v2',
   quantization: 'int8',      // '' for full precision (bigger download, slower CPU)
@@ -134,6 +136,7 @@ function loadSettings() {
     if (!settings.shortcut || typeof settings.shortcut.keycode !== 'number') {
       settings.shortcut = { ...DEFAULT_SETTINGS.shortcut };
     }
+    settings.keywords = savedKeywords(settings.keywords);
   } catch (err) {
     if (err.code === 'ENOENT') return;   // a genuine first run
     const kept = preserveUnreadable(file, err);
@@ -1901,10 +1904,10 @@ function applyDictionary(text, entries) {
 
 // --------------------------------------------------------------- keywords --
 
-// Say "Google, what is the capital of Indiana" and the rest of the sentence
-// becomes the query. A keyword only counts at the very start of what you said,
-// so "Google is a big company" typed into a document is left alone unless
-// "Google" is the first thing out of your mouth.
+// Each keyword is a description of an action. Jev reads what you said and
+// decides whether it asks for one of those actions or is dictation to be typed,
+// and picks the words the action should act on — "search for the capital of
+// Indiana" gives a search keyword the query "the capital of Indiana".
 
 // The four things a keyword can do. Anything else in the settings file — an
 // older build's type, a typo — reads as a URL, which is the harmless one.
@@ -1914,28 +1917,30 @@ const keywordType = (value) => (KEYWORD_TYPES.has(value) ? value : 'url');
 const GROUP_NAME_MAX = 40;
 const MAX_KEYWORD_GROUPS = 32;
 
-// Matches the longest keyword that starts the transcript, or null.
-function matchKeyword(text) {
-  const lower = text.toLowerCase();
-  let best = null;
-  for (const entry of settings.keywords || []) {
-    const word = String(entry.word || '').trim().toLowerCase();
-    if (!word || !entry.target) continue;
-    if (!lower.startsWith(word)) continue;
-    // "Googleplex" must not fire the "Google" keyword.
-    const rest = text.slice(word.length);
-    if (rest && /[\p{L}\p{N}]/u.test(rest[0])) continue;
-    if (best && best.word.length >= word.length) continue;
-    best = {
-      word,
-      type: keywordType(entry.type),
-      target: String(entry.target),
-      // Drop whatever punctuation the model put after the keyword, and the
-      // sentence punctuation it put at the end.
-      query: rest.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[.,!?;:…\s]+$/u, '').trim(),
-    };
-  }
-  return best;
+function savedKeywords(list) {
+  return (Array.isArray(list) ? list : []).slice(0, 64).map((entry) => ({
+    ...keywordEntry(entry, keywordType),
+    group: String(entry && entry.group || '').trim().slice(0, GROUP_NAME_MAX),
+  }));
+}
+
+function keywordName(description) {
+  const flat = description.replace(/\s+/g, ' ').trim();
+  return flat.length > 40 ? `${flat.slice(0, 39).trimEnd()}…` : flat;
+}
+
+async function matchKeyword(text) {
+  const apiKey = typesafeApiKey(settings);
+  if (!apiKey) return null;
+  const intent = await classifyIntent(text, settings.keywords, apiKey);
+  if (!intent) return null;
+  trace('keyword', intent.description, 'p=' + intent.probability.toFixed(2));
+  return {
+    word: keywordName(intent.description),
+    type: keywordType(intent.type),
+    target: intent.target,
+    query: intent.query,
+  };
 }
 
 // Quote-aware split, so a command target can name a path with spaces.
@@ -2292,7 +2297,20 @@ async function handleAudio(buffer, duration, cancelled, error) {
 
     // A keyword takes the place of pasting: the words were an instruction, not
     // something to type.
-    const keyword = matchKeyword(text);
+    let keyword = null;
+    let intentError = '';
+    try {
+      keyword = await matchKeyword(text);
+    } catch (err) {
+      intentError = err.name === 'TimeoutError'
+        ? 'TypeSafe did not answer in time.'
+        : String(err.message || err);
+      trace('keyword failed', intentError);
+    }
+    if (generation !== cancelGeneration) {
+      trace('handleAudio abandoned', 'cancelled while matching keywords');
+      return;
+    }
     if (keyword) {
       const label = await runKeyword(keyword);
       backToIdle();
@@ -2302,6 +2320,13 @@ async function handleAudio(buffer, duration, cancelled, error) {
 
     const verb = await deliver(text);
     backToIdle();
+    if (intentError) {
+      finishOverlay({
+        cmd: 'done', sounds: settings.sounds, text,
+        label: `✓ ${verb} — keywords off: ${intentError}`,
+      }, 2800);
+      return;
+    }
     finishOverlay({ cmd: 'done', sounds: settings.sounds, text, verb }, 1600);
   } catch (err) {
     if (liveStream === stream) liveStream = null;
@@ -2544,6 +2569,7 @@ ipcMain.handle('settings:get', () => {
     modulateMode: resolveModulateMode(settings),
     mistralApiKey: settings.mistralApiKey,
     modulateApiKey: settings.modulateApiKey,
+    typesafeApiKey: settings.typesafeApiKey,
   },
   pretty: prettyShortcut(settings.shortcut),
   appState,
@@ -2597,12 +2623,7 @@ ipcMain.handle('settings:set', (_e, partial) => {
   if (Array.isArray(partial.keywords)) {
     // Half-filled rows are kept rather than dropped — you are probably still
     // typing one — and simply never match until both halves are there.
-    settings.keywords = partial.keywords.slice(0, 64).map((entry) => ({
-      word: String(entry.word || '').trim(),
-      type: keywordType(entry.type),
-      target: String(entry.target || '').trim(),
-      group: String(entry.group || '').trim().slice(0, GROUP_NAME_MAX),
-    }));
+    settings.keywords = savedKeywords(partial.keywords);
   }
   if (Array.isArray(partial.keywordGroups)) {
     const groups = [];
@@ -2691,6 +2712,9 @@ ipcMain.handle('settings:set', (_e, partial) => {
   }
   if (partial.modulateApiKey !== undefined) {
     settings.modulateApiKey = String(partial.modulateApiKey);
+  }
+  if (partial.typesafeApiKey !== undefined) {
+    settings.typesafeApiKey = String(partial.typesafeApiKey);
   }
   if (partial.duck !== undefined) {
     settings.duck = partial.duck;

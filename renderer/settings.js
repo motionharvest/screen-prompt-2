@@ -450,13 +450,13 @@ function uniqueGroupName(base) {
 }
 
 function focusKeyword(index) {
-  $('keyword-list').querySelector(`.kw[data-index="${index}"] .kw-word`)?.focus();
+  $('keyword-list').querySelector(`.kw[data-index="${index}"] .kw-desc`)?.focus();
 }
 
 function addKeyword(group) {
   stopRecording();
   shutGroups.delete(group);
-  keywords.push({ word: '', type: 'url', target: '', group });
+  keywords.push({ description: '', type: 'url', target: '', group });
   renderKeywords();
   focusKeyword(keywords.length - 1);
 }
@@ -646,7 +646,7 @@ function keywordRow(index, group) {
   row.dataset.index = String(index);
   row.innerHTML = `
     <span class="kw-grip" title="Drag into a group, or up and down">&#x283f;</span>
-    <input type="text" class="kw-word" placeholder="Google" spellcheck="false">
+    <textarea class="kw-desc" rows="2" placeholder="Searches Google for whatever the user asks about"></textarea>
     <select class="kw-type">
       <option value="url">Open a URL</option>
       <option value="command">Run a command</option>
@@ -658,10 +658,10 @@ function keywordRow(index, group) {
   `;
   // Values are assigned as properties rather than interpolated into the
   // markup above, so a keyword containing quotes cannot break out of it.
-  const word = row.querySelector('.kw-word');
+  const desc = row.querySelector('.kw-desc');
   const type = row.querySelector('.kw-type');
   const target = row.querySelector('.kw-target');
-  word.value = keyword.word || '';
+  desc.value = keyword.description || '';
   type.value = KEYWORD_TYPES.includes(keyword.type) ? keyword.type : 'url';
   target.value = keyword.target || '';
   target.placeholder = PLACEHOLDER[type.value] || '';
@@ -676,7 +676,10 @@ function keywordRow(index, group) {
 
   // 'change' rather than 'input': it fires on blur, so a settings write does
   // not happen on every keystroke.
-  word.addEventListener('change', () => { keywords[index].word = word.value.trim(); saveKeywords(); });
+  desc.addEventListener('change', () => {
+    keywords[index].description = desc.value.trim();
+    saveKeywords();
+  });
   if (!macro) {
     target.addEventListener('change', () => {
       keywords[index].target = target.value.trim();
@@ -749,7 +752,10 @@ $('group-add').addEventListener('click', () => {
 
 $('launch-add').addEventListener('click', () => {
   if ($('launch-add').disabled) return;
-  keywords.push({ word: 'Launch', type: 'command', target: launchAppTarget, group: '' });
+  keywords.push({
+    description: 'Starts an application the user names, such as “launch Spotify”',
+    type: 'command', target: launchAppTarget, group: '',
+  });
   renderKeywords();
   saveKeywords();
   focusKeyword(keywords.length - 1);
@@ -884,6 +890,8 @@ async function init() {
   $('press-enter').checked = state.settings.pressEnter;
   $('mistral-key').value = state.settings.mistralApiKey || '';
   $('modulate-key').value = state.settings.modulateApiKey || '';
+  $('typesafe-key').value = state.settings.typesafeApiKey || '';
+  keywordKeyNote(state.settings.typesafeApiKey);
   showEngine(engineOf(state.settings), state.settings.modulateMode);
   $('overlay-follow').checked = state.settings.overlayFollow;
   $('overlay-always').checked = state.settings.overlayAlways;
@@ -997,6 +1005,15 @@ for (const input of document.querySelectorAll('input[name="modulate-mode"]')) {
     window.api.setSettings({ modulateMode: input.value });
   });
 }
+function keywordKeyNote(key) {
+  $('typesafe-missing').hidden = Boolean(String(key || '').trim());
+}
+
+$('typesafe-key').addEventListener('change', (e) => {
+  window.api.setSettings({ typesafeApiKey: e.target.value });
+  keywordKeyNote(e.target.value);
+});
+
 $('mistral-key').addEventListener('change', (e) => {
   window.api.setSettings({ mistralApiKey: e.target.value });
 });
