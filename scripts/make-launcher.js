@@ -1,6 +1,6 @@
 // Builds "Screen Prompt 2.exe", the double-click launcher, from
-// launcher/launcher.cs. Windows only — everywhere else the shell script and
-// the .desktop entry already cover starting the app.
+// launcher/launcher.cs. On Linux the launcher is a .desktop entry instead,
+// written by make-launcher-linux.js; macOS has none yet.
 //
 // The compiler is the C# one that ships with the .NET Framework, present on
 // every Windows since 8. That is the whole toolchain: no npm dependency, no
@@ -23,8 +23,13 @@ const OUT = path.join(ROOT, 'Screen Prompt 2.exe');
 // the paths differ — the compiler invoked is the Windows one either way.
 const WSL = process.platform === 'linux' && /microsoft/i.test(os.release());
 
+if (process.platform === 'linux' && !WSL) {
+  require('./make-launcher-linux').build();
+  return;
+}
+
 if (process.platform !== 'win32' && !WSL) {
-  console.error('The launcher is a Windows executable; nothing to build here.');
+  console.error('There is no launcher for this platform; start the app with npm start.');
   process.exit(0);
 }
 

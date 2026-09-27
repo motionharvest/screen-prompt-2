@@ -164,6 +164,18 @@ repo root; it finds Electron relative to itself. See
 use **Start with Windows** in the settings window rather than a Startup-folder
 shortcut — it registers the same launch with `--hidden`, straight into the tray.
 
+### Starting it without a terminal (Linux)
+
+Run `npm run launcher` once. It writes a desktop entry to
+`~/.local/share/applications/screen-prompt-2.desktop`, which puts
+**Screen Prompt 2** in the app menu, launcher search and dock with its icon.
+Right-clicking it offers *Start in the tray*, the same `--hidden` launch.
+
+Like the Windows exe, the entry starts Electron from this checkout, so
+`git pull` updates it. It records the checkout's full path, so run the command
+again if you move the folder. For starting at login, use **Start at login** in
+the settings window.
+
 ### Per-platform prerequisites
 
 **Windows 10/11** — nothing else. Ducking and auto-paste use components that
