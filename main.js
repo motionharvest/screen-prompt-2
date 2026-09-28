@@ -51,6 +51,9 @@ const DEFAULT_SETTINGS = {
   // minute or two. Turn this on to always transcribe in one pass and skip the
   // chunking, trading a small quality risk on very long clips for speed.
   skipChunking: false,
+  // Ask Jev whether each dictation is a keyword. Off, every transcript is
+  // typed straight away and nothing waits on TypeSafe.
+  keywordsEnabled: true,
   keywords: [],              // [{description, type: 'url'|'command'|'keys'|'alias', target, group}]
   keywordGroups: [],
   // Words the model reliably mishears, and how they should be spelled instead.
@@ -1447,6 +1450,12 @@ let armed = null;
 let layerInteractive = false;
 let dragging = false;
 let dragEndedAt = 0;
+// Saying "this" arms the layer, but it takes the mouse only while Shift is
+// held. "This" is an ordinary word, and a layer that took every monitor's
+// mouse each time it was said left the computer unclickable for the rest of
+// the dictation. A drag already under way keeps it until the button is up.
+let boxKeyHeld = false;
+const BOX_KEYS = new Set([UiohookKey.Shift, UiohookKey.ShiftRight]);
 
 const trailLength = () => Math.min(TRAIL_MAX_LENGTH,
   Math.max(TRAIL_MIN_LENGTH, Number(settings.cursorTrailLength) || 650));
@@ -1557,12 +1566,23 @@ function setLayerInteractive(on) {
   eachTrailWindow((win) => win.setIgnoreMouseEvents(!on));
 }
 
+function refreshLayer() {
+  const on = Boolean(armed && (boxKeyHeld || dragging));
+  if (on !== layerInteractive) setLayerInteractive(on);
+}
+
+function onBoxKey(down) {
+  if (boxKeyHeld === down) return;
+  boxKeyHeld = down;
+  refreshLayer();
+}
+
 function armNext() {
   if (armed || boxesOwed < 1) return;
   boxesOwed -= 1;
   armed = { n: markerCount + 1 };
   trace('arm', `n=${armed.n}`);
-  setLayerInteractive(true);
+  refreshLayer();
   eachTrailWindow((win) => trailCmd(win, { cmd: 'arm', n: armed.n }));
 }
 
@@ -1930,6 +1950,7 @@ function keywordName(description) {
 }
 
 async function matchKeyword(text) {
+  if (!settings.keywordsEnabled) return null;
   const apiKey = typesafeApiKey(settings);
   if (!apiKey) return null;
   const intent = await classifyIntent(text, settings.keywords, apiKey);
@@ -2552,6 +2573,7 @@ ipcMain.handle('settings:get', () => {
     launchAtStartup: launchAtStartupEnabled(), model: settings.model,
     theme: settings.theme, duck: settings.duck, duckLevel: settings.duckLevel,
     tidy: settings.tidy, keywords: settings.keywords,
+    keywordsEnabled: settings.keywordsEnabled,
     keywordGroups: settings.keywordGroups,
     dictionary: settings.dictionary,
     overlayFollow: settings.overlayFollow,
@@ -2713,6 +2735,9 @@ ipcMain.handle('settings:set', (_e, partial) => {
   if (partial.modulateApiKey !== undefined) {
     settings.modulateApiKey = String(partial.modulateApiKey);
   }
+  if (partial.keywordsEnabled !== undefined) {
+    settings.keywordsEnabled = Boolean(partial.keywordsEnabled);
+  }
   if (partial.typesafeApiKey !== undefined) {
     settings.typesafeApiKey = String(partial.typesafeApiKey);
   }
@@ -2747,6 +2772,7 @@ ipcMain.on('trail:drag', (_e, phase) => {
   }
   dragging = false;
   dragEndedAt = Date.now();
+  refreshLayer();
 });
 
 ipcMain.on('trail:box', (_e, box) => {
@@ -2831,6 +2857,7 @@ if (!gotLock) {
     if (settings.duck) ducker.start();
 
     uIOhook.on('keydown', (e) => {
+      if (BOX_KEYS.has(e.keycode)) onBoxKey(true);
       if (e.keycode === settings.shortcut.keycode) {
         trace('hook down', e.keycode, 'capturing=' + capture.active, 'state=' + appState);
       }
@@ -2845,6 +2872,7 @@ if (!gotLock) {
       matcher.keydown(e.keycode);
     });
     uIOhook.on('keyup', (e) => {
+      if (BOX_KEYS.has(e.keycode)) onBoxKey(false);
       if (e.keycode === settings.shortcut.keycode) {
         trace('hook up', e.keycode, 'capturing=' + capture.active, 'state=' + appState);
       }
@@ -2856,6 +2884,7 @@ if (!gotLock) {
       powerMonitor.on(event, () => {
         trace('session', event, 'heldRaw=[' + [...matcher.heldRaw] + ']');
         matcher.reset();
+        onBoxKey(false);
       });
     }
   });

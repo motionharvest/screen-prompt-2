@@ -793,6 +793,16 @@
       <div class="grid">
         <section class="card wide">
           <h3>Keywords</h3>
+          <div class="switch-row" style="margin: 0 0 12px;">
+            <div>
+              <div class="t">Check each dictation for keywords</div>
+              <div class="d">
+                Off, everything you say is typed the moment it is transcribed,
+                without waiting for TypeSafe to decide whether it was a keyword.
+              </div>
+            </div>
+            <input type="checkbox" class="switch" id="keywords-enabled">
+          </div>
           <div class="field" style="margin: 0 0 12px;">
             <label class="t" for="typesafe-key">TypeSafe API key</label>
             <div class="d"><a href="https://console.typesafe.ai/" target="_blank" rel="noreferrer">Get a key at console.typesafe.ai</a></div>
@@ -1048,10 +1058,10 @@
             <div>
               <div class="t">Number what you point at</div>
               <div class="d">
-                Say "this" or "here" while dictating and the pointer becomes
-                a crosshair: drag a box around what you mean, and the next
-                number appears just above its top-left corner. Nothing is
-                drawn until you release a rectangle, and the crosshair waits as
+                Say "this" while dictating, then hold Shift and drag a box
+                around what you mean; the next number appears just above its
+                top-left corner. The mouse stays yours until you hold Shift, so
+                you can click and scroll while you talk, and the box waits as
                 long as you need. Escape puts it away without stopping the
                 dictation; a second Escape stops the dictation the way it
                 always does. Everything fades when you stop talking. Needs a

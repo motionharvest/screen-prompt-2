@@ -890,6 +890,7 @@ async function init() {
   $('press-enter').checked = state.settings.pressEnter;
   $('mistral-key').value = state.settings.mistralApiKey || '';
   $('modulate-key').value = state.settings.modulateApiKey || '';
+  $('keywords-enabled').checked = state.settings.keywordsEnabled !== false;
   $('typesafe-key').value = state.settings.typesafeApiKey || '';
   keywordKeyNote(state.settings.typesafeApiKey);
   showEngine(engineOf(state.settings), state.settings.modulateMode);
@@ -1008,6 +1009,10 @@ for (const input of document.querySelectorAll('input[name="modulate-mode"]')) {
 function keywordKeyNote(key) {
   $('typesafe-missing').hidden = Boolean(String(key || '').trim());
 }
+
+$('keywords-enabled').addEventListener('change', (e) => {
+  window.api.setSettings({ keywordsEnabled: e.target.checked });
+});
 
 $('typesafe-key').addEventListener('change', (e) => {
   window.api.setSettings({ typesafeApiKey: e.target.value });
