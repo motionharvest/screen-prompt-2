@@ -1444,6 +1444,14 @@ const MARKER_LAG_MS = 320;
 const trailWins = new Map();  // display id -> BrowserWindow
 const trailReady = new WeakSet();
 const trailPending = new WeakMap();
+const trailWanted = new WeakSet();  // asked to be shown before its page loaded
+// On X11, click-through only holds if it is set once the window is really on
+// screen. A window shown before its page has loaded appears later than the
+// call that showed it, and a setting made in between is dropped — leaving a
+// window the size of a monitor that takes every click. So these are shown only
+// once loaded, and the setting is made again after a moment, because there is
+// no event for the window actually appearing.
+const CLICK_THROUGH_SETTLE_MS = 200;
 let trailTimer = null;
 let trailHideTimer = null;
 let markerCount = 0;
@@ -1495,9 +1503,19 @@ function createTrailWindow(display) {
     trailPending.delete(win);
     win.webContents.send('trail:cmd', { theme: settings.theme, length: trailLength() });
     for (const msg of queued) win.webContents.send('trail:cmd', msg);
+    if (trailWanted.has(win)) revealTrailWindow(win);
   });
   win.loadFile(path.join(__dirname, 'renderer', 'trail.html'));
   return win;
+}
+
+function revealTrailWindow(win) {
+  trailWanted.delete(win);
+  win.showInactive();
+  win.setIgnoreMouseEvents(!layerInteractive);
+  setTimeout(() => {
+    if (!win.isDestroyed()) win.setIgnoreMouseEvents(!layerInteractive);
+  }, CLICK_THROUGH_SETTLE_MS);
 }
 
 function trailCmd(win, payload) {
@@ -1635,11 +1653,8 @@ function startTrail() {
   ensureTrailWindows();
   eachTrailWindow((win) => {
     trailCmd(win, { cmd: 'start' });
-    win.showInactive();
-    // On X11, click-through set before the window is shown is dropped, and a
-    // window this size then takes every click on the monitor. Applied again
-    // once it is on screen.
-    win.setIgnoreMouseEvents(!layerInteractive);
+    if (trailReady.has(win)) revealTrailWindow(win);
+    else trailWanted.add(win);
   });
   if (!trailTimer) trailTimer = setInterval(trailTick, TRAIL_POLL_MS);
   trailTick();
