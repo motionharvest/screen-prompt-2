@@ -1324,6 +1324,9 @@ function shapeOverlay(resting) {
 function showOverlay({ resting = false } = {}) {
   shapeOverlay(resting);
   overlayWin.showInactive();
+  // Applied again once it is on screen: on X11, click-through set on a window
+  // that is not yet shown is dropped, and the window takes every click.
+  overlayWin.setIgnoreMouseEvents(!interactive, { forward: true });
   startPointerWatch();
   // Whether it follows is one rule, applied whenever it is on screen. A mark
   // that rested on the monitor you left would be no more use than a pill that
@@ -1633,6 +1636,10 @@ function startTrail() {
   eachTrailWindow((win) => {
     trailCmd(win, { cmd: 'start' });
     win.showInactive();
+    // On X11, click-through set before the window is shown is dropped, and a
+    // window this size then takes every click on the monitor. Applied again
+    // once it is on screen.
+    win.setIgnoreMouseEvents(!layerInteractive);
   });
   if (!trailTimer) trailTimer = setInterval(trailTick, TRAIL_POLL_MS);
   trailTick();
