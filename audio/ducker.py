@@ -14,13 +14,15 @@ nothing to install.
 Two back-ends, picked by platform:
 
   Linux   pactl, which drives PulseAudio and PipeWire's pulse shim alike. Ducks
-          each stream separately and restores each to its own original volume,
-          matching what the Windows helper does.
+          the default output device as a whole; PulseSinkDucker explains why
+          not each stream.
 
   macOS   osascript, which can only reach the *system* output volume. macOS has
           no public per-application volume API — there is no equivalent of the
-          Core Audio session mixer — so ducking there is all-or-nothing, and
-          this app's own tones are turned down with everything else.
+          Core Audio session mixer.
+
+Both therefore duck the whole output, and this app's own tones are turned down
+with everything else while a recording runs.
 
 Like the Windows helper, the read loop ends when stdin closes and the `finally`
 restores on the way out, so killing the app mid-recording can never leave the
@@ -51,10 +53,9 @@ def state_path() -> str:
     They live on disk as well as in memory because in memory they die with this
     process, and the `finally` in the read loop only covers a clean stop. A
     kill, a crash, or the machine going down mid-recording would otherwise leave
-    every stream quiet with no record of where it came from — and both
-    PulseAudio (module-stream-restore) and macOS remember a volume once set, so
-    the ducked value silently becomes the new normal and the next recording
-    multiplies it down again.
+    the output quiet with no record of where it came from — and both PulseAudio
+    and macOS keep an output volume once set, so the ducked value silently
+    becomes the new normal and the next recording multiplies it down again.
     """
     if sys.platform == "darwin":
         base = os.path.expanduser("~/Library/Application Support")
@@ -100,7 +101,7 @@ def emit(obj: dict) -> None:
 def run(argv: list[str]) -> str:
     """Capture stdout, or "" if the command fails.
 
-    Every caller treats failure as "this stream is gone" — an app that quit
+    Every caller treats failure as "this device is gone" — an output unplugged
     while ducked takes its volume with it, so failing to restore it is the
     correct outcome rather than an error worth reporting.
     """
@@ -116,140 +117,109 @@ def run(argv: list[str]) -> str:
 # ------------------------------------------------------------------- Linux --
 
 
-class PulseDucker:
-    """Per-stream ducking through pactl."""
+class PulseSinkDucker:
+    """System-wide ducking through pactl: the default output device, not each app.
 
-    scope = "per-app"
+    Per-stream ducking was tried first and fails in a way the user cannot see
+    or undo. PulseAudio's module-stream-restore remembers a volume against a
+    key such as the application name or media role, and saves it the moment it
+    is set. A stream that ends while ducked — a notification, a short clip,
+    anything that plays and exits within one recording — takes its index with
+    it, so the restore has nothing to write to, and the ducked value is left
+    behind as that key's remembered volume. Every later stream with the same
+    key then starts quiet, and most desktops show no per-app slider to raise it.
+
+    The output device has neither problem. It outlives any recording, it is the
+    volume the desktop's own control already shows, and it is one value to put
+    back. The cost is that this app's own tones are turned down with it; main.js
+    holds the duck back until the start tone has finished for that reason.
+    """
+
+    scope = "system"
 
     def __init__(self) -> None:
-        # index -> [raw volume per channel], captured at duck time.
-        self.saved: list[tuple[str, list[int]]] = []
+        # (sink name, [raw volume per channel]) captured at duck time.
+        self.saved: tuple[str, list[int]] | None = None
 
     @staticmethod
     def available() -> bool:
         return shutil.which("pactl") is not None
 
-    def _streams(self) -> list[dict]:
-        """[{index, volumes:[int], binary, role}] for every playback stream."""
-        # -f json landed in pactl 15 (2021). Older distributions still ship 13,
-        # so the human-readable format is parsed as a fallback rather than
-        # making this a hard version requirement.
-        raw = run(["pactl", "-f", "json", "list", "sink-inputs"])
-        if raw:
-            try:
-                return [
-                    {
-                        "index": str(s["index"]),
-                        "volumes": [int(c["value"]) for c in s["volume"].values()],
-                        "binary": (s.get("properties") or {}).get(
-                            "application.process.binary", ""
-                        ),
-                        "role": (s.get("properties") or {}).get("media.role", ""),
-                    }
-                    for s in json.loads(raw)
-                ]
-            except (ValueError, KeyError, TypeError):
-                pass  # fall through to the text parser
-        return self._streams_from_text()
+    @staticmethod
+    def _default_sink() -> str:
+        """The default sink's name, or the alias pactl resolves itself.
+
+        The name is kept rather than the alias so that switching output device
+        mid-recording — headphones connecting, say — restores the device that
+        was actually ducked, instead of writing its volume onto the new one.
+        get-default-sink landed in pactl 15; older versions get the alias.
+        """
+        return run(["pactl", "get-default-sink"]).strip() or "@DEFAULT_SINK@"
 
     @staticmethod
-    def _streams_from_text() -> list[dict]:
-        raw = run(["pactl", "list", "sink-inputs"])
-        streams = []
-        for block in re.split(r"\n(?=Sink Input #)", raw):
-            index = re.match(r"Sink Input #(\d+)", block)
-            if not index:
-                continue
-            # "Volume: front-left: 65536 / 100% / 0.00 dB, front-right: ..."
-            line = re.search(r"^\s*Volume:(.*)$", block, re.M)
-            volumes = [int(v) for v in re.findall(r":\s*(\d+)\s*/", line.group(1))] if line else []
-            if not volumes:
-                continue
-            binary = re.search(r'application\.process\.binary = "([^"]*)"', block)
-            role = re.search(r'media\.role = "([^"]*)"', block)
-            streams.append({
-                "index": index.group(1),
-                "volumes": volumes,
-                "binary": binary.group(1) if binary else "",
-                "role": role.group(1) if role else "",
-            })
-        return streams
+    def _volumes(sink: str) -> list[int]:
+        # "Volume: front-left: 36638 /  56% / -15.15 dB,   front-right: ..."
+        raw = run(["pactl", "get-sink-volume", sink])
+        return [int(v) for v in re.findall(r":\s*(\d+)\s*/", raw)]
 
-    def duck(self, level: float, skip_name: str) -> int:
+    @staticmethod
+    def _set(sink: str, volumes: list[int]) -> None:
+        # One value per channel, so a device whose channels sat at different
+        # volumes keeps that balance instead of being flattened.
+        run(["pactl", "set-sink-volume", sink, *[str(v) for v in volumes]])
+
+    def duck(self, level: float, _skip_name: str) -> int:
         self.restore()
-        for stream in self._streams():
-            # Our own tones come from a Chromium audio-service child process,
-            # which reports the same binary name as the main one — so matching
-            # on the name exempts the whole tree, as it does on Windows.
-            if skip_name and stream["binary"] == skip_name:
-                continue
-            # The counterpart of skipping the Windows system-sounds session:
-            # desktop blips are too short to be worth talking over.
-            if stream["role"] == "event":
-                continue
-            # Compared against the level applied to *full scale*, not to this
-            # stream's own volume. A stream already at or below where a
-            # full-volume one would be put is quiet enough already, and ducking
-            # it again would record the ducked value as its original — which is
-            # how one lost restore turns into silence a recording at a time.
-            # Rounded the same way the value was written, or a stream sitting at
-            # exactly the ducked volume reads as one unit above the threshold
-            # and gets ducked again.
-            if all(v <= round(level * FULL_SCALE) for v in stream["volumes"]):
-                continue
-
-            floor = MIN_DUCKED * FULL_SCALE
-            target = [max(int(floor), round(v * level)) for v in stream["volumes"]]
-            # One value per channel, so a stream whose channels sat at different
-            # volumes keeps that balance instead of being flattened.
-            #
-            # Recorded before the write: a successful set prints nothing, so the
-            # output cannot distinguish success from failure, and a stream left
-            # out of `saved` is a stream that never gets put back.
-            self.saved.append((stream["index"], stream["volumes"], stream["binary"]))
-            run(["pactl", "set-sink-input-volume", stream["index"],
-                 *[str(t) for t in target]])
-        return len(self.saved)
+        sink = self._default_sink()
+        current = self._volumes(sink)
+        if not current:
+            return 0
+        floor = int(MIN_DUCKED * FULL_SCALE)
+        target = [max(floor, round(v * level)) for v in current]
+        # Already at or below the target: recording a ducked value as the
+        # original is what makes a lost restore permanent and compounding.
+        if all(t >= c for t, c in zip(target, current)):
+            return 0
+        # Recorded before the write: a successful set prints nothing, so the
+        # output cannot distinguish success from failure, and a volume left out
+        # of `saved` is a volume that never gets put back.
+        self.saved = (sink, current)
+        self._set(sink, target)
+        return 1
 
     def state(self) -> list:
-        return [
-            {"index": index, "volumes": volumes, "binary": binary}
-            for index, volumes, binary in self.saved
-        ]
+        if self.saved is None:
+            return []
+        sink, volumes = self.saved
+        return [{"sink": sink, "volumes": volumes}]
 
     def recover(self, entries: list) -> int:
-        """Put back volumes a previous process never got to restore.
+        """Put back a volume a previous process never got to restore.
 
-        Matched on the binary name rather than the sink-input index: the index
-        belongs to a stream, and the stream this is rescuing may well have been
-        torn down and recreated since — which is exactly the case where
-        stream-restore has already reapplied the ducked volume to it.
+        Entries without a sink are skipped: they were written by the old
+        per-stream helper, and there is no stream left to aim them at.
         """
-        wanted: dict[str, list[int]] = {}
-        for entry in entries:
-            binary = str(entry.get("binary") or "")
-            volumes = entry.get("volumes")
-            if binary and isinstance(volumes, list) and volumes:
-                wanted[binary] = [int(v) for v in volumes]
-
         restored = 0
-        for stream in self._streams():
-            original = wanted.get(stream["binary"])
-            if not original:
+        for entry in entries:
+            sink = str(entry.get("sink") or "")
+            original = entry.get("volumes")
+            if not sink or not isinstance(original, list) or not original:
                 continue
-            # Only raise. Something louder than the value being put back has
-            # legitimately changed since, and pulling it down would be wrong.
-            if all(c >= o for c, o in zip(stream["volumes"], original)):
+            original = [int(v) for v in original]
+            current = self._volumes(sink)
+            # Gone (unplugged since), or already louder than the value being
+            # put back — someone raised it by hand, and pulling it down would
+            # be wrong.
+            if not current or all(c >= o for c, o in zip(current, original)):
                 continue
-            run(["pactl", "set-sink-input-volume", stream["index"],
-                 *[str(v) for v in original]])
+            self._set(sink, original)
             restored += 1
         return restored
 
     def restore(self) -> None:
-        for index, volumes, _binary in self.saved:
-            run(["pactl", "set-sink-input-volume", index, *[str(v) for v in volumes]])
-        self.saved.clear()
+        if self.saved is not None:
+            self._set(*self.saved)
+            self.saved = None
 
 
 # ------------------------------------------------------------------ macOS --
@@ -287,7 +257,7 @@ class SystemVolumeDucker:
         if current is None:
             return 0
         target = max(int(MIN_DUCKED * 100), round(current * level))
-        # Already at or below the target: see the note in PulseDucker.duck —
+        # Already at or below the target: see the note in PulseSinkDucker.duck —
         # recording a ducked value as the original is what makes a lost restore
         # permanent and compounding.
         if target >= current:
@@ -305,7 +275,7 @@ class SystemVolumeDucker:
             if not isinstance(original, (int, float)):
                 continue
             current = self._get()
-            # Only raise, for the same reason as the per-app back-ends.
+            # Only raise, for the same reason as the Linux back-end.
             if current is not None and current >= original:
                 continue
             self._set(int(original))
@@ -320,10 +290,10 @@ class SystemVolumeDucker:
 
 def main() -> int:
     if sys.platform == "darwin":
-        ducker: PulseDucker | SystemVolumeDucker = SystemVolumeDucker()
+        ducker: PulseSinkDucker | SystemVolumeDucker = SystemVolumeDucker()
         missing = "osascript not found."
     else:
-        ducker = PulseDucker()
+        ducker = PulseSinkDucker()
         missing = "pactl not found — install PulseAudio or PipeWire utilities."
 
     if not ducker.available():

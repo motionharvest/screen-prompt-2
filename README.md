@@ -211,16 +211,18 @@ Everything works everywhere except where noted:
 | Type mode | ✅ | ✅ needs Accessibility | ✅ with a helper installed |
 | Keyboard-macro keyword | ✅ | ✅ needs Accessibility | ✅ needs wtype or xdotool |
 | Keys held back while recording one | ✅ | ❌ records, but the keys also act | ❌ records, but the keys also act |
-| Volume ducking | ✅ per-app | ⚠️ whole output only | ✅ per-app |
+| Volume ducking | ✅ per-app | ✅ whole output | ✅ whole output |
 | Launch-an-app keyword | ✅ Start menu | ✅ /Applications | ✅ `.desktop` entries |
 | Start at login | ✅ registry | ✅ login item | ✅ XDG autostart |
 
-**macOS ducking is all-or-nothing.** There is no public per-application volume
-API on macOS — CoreAudio exposes output *device* volume, not a per-process
-mixer — so the whole output is turned down and put back, and the app's own
-tones are quietened with it. Windows (Core Audio sessions) and Linux
-(PulseAudio sink inputs) both duck each app separately and restore each to its
-own original volume.
+**macOS and Linux duck the whole output.** The output device's volume is
+turned down and put back, so the app's own tones would be quietened with it;
+the duck therefore waits until the start tone has played. macOS has no public
+per-application volume API. Linux has one (PulseAudio sink inputs), but
+PulseAudio remembers each app's volume the moment it is set, so an app whose
+sound ended mid-recording kept its ducked volume, and most desktops offer no
+per-app slider to raise it back. Windows (Core Audio sessions) still ducks
+each app separately and restores each to its own original volume.
 
 **Wayland limits the global shortcut.** The compositor deliberately stops one
 client from reading another's keystrokes, so the hook only sees keys pressed in
@@ -726,17 +728,17 @@ the success line. Without that a keyword can only ever claim it worked.
   useful once something else has overwritten it, or once you want back something
   you dictated last week.
 - Ducking restores volumes when the helper's stdin closes, so quitting the app
-  mid-recording still puts the rest of the system back. It skips desktop event
-  sounds and every process sharing this app's executable name (Chromium plays
-  our tones from a child process, not the main one).
+  mid-recording still puts the rest of the system back. On Windows it skips
+  desktop event sounds and every process sharing this app's executable name
+  (Chromium plays our tones from a child process, not the main one).
 - A helper that is *killed* rather than closed cannot restore anything, and
-  both Windows and PulseAudio remember a volume once it is set — so the ducked
-  value would quietly become that application's normal volume, and the next
+  Windows, macOS and PulseAudio all keep a volume once it is set — so the
+  ducked value would quietly become the normal volume, and the next
   recording would duck it again from there. The originals are therefore written
   to `duck-state.json` next to the settings file for as long as anything is
   ducked, and recovered on the next launch before anything else touches the
-  volumes. Two backstops sit behind that: nothing already at or below the duck
-  level is ducked again, and nothing is ever set below 2%.
+  volumes. Two backstops sit behind that: nothing already at its ducked volume
+  is ducked again, and nothing is ever set below 2%.
 - If auto-paste is unavailable, the transcript is still on the clipboard —
   the feature degrades to "paste it yourself" rather than losing text. Type
   mode falls back the same way: a dirty clipboard beats a transcript that went

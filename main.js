@@ -954,11 +954,17 @@ function startLocalEngine() {
 // speakers. The work happens in a sidecar — audio/ducker.ps1 on Windows,
 // audio/ducker.py elsewhere — and both speak the same JSON-lines protocol, so
 // this side only manages its lifetime and the two commands it understands.
+
+// How long the start tone takes to play: its 20 ms lead-in plus its two notes
+// (TONES.start in renderer/overlay.js), with a little over for the IPC hop.
+const START_TONE_MS = 220;
+
 class Ducker {
   constructor() {
     this.proc = null;
     this.ready = false;
     this.ducked = false;
+    this.pending = null;
     this.buf = '';
   }
 
@@ -1002,9 +1008,9 @@ class Ducker {
     // event, which takes the whole app down over an optional feature.
     this.proc.on('error', (err) => {
       console.error('[duck]', err.message);
-      this.proc = null; this.ready = false; this.ducked = false;
+      this.proc = null; this.ready = false; this.forget();
     });
-    this.proc.on('exit', () => { this.proc = null; this.ready = false; this.ducked = false; });
+    this.proc.on('exit', () => { this.proc = null; this.ready = false; this.forget(); });
   }
 
   send(msg) {
@@ -1014,19 +1020,39 @@ class Ducker {
   duck() {
     if (!settings.duck || !this.ready || this.ducked) return;
     this.ducked = true;
-    this.send({
-      cmd: 'duck',
-      level: Math.min(1, Math.max(0, settings.duckLevel)),
-      // Chromium plays our tones from an audio-service child process, so the
-      // exempt set has to be the whole tree — they share this executable name.
-      skipName: path.basename(process.execPath, '.exe'),
-    });
+    const send = () => {
+      this.pending = null;
+      this.send({
+        cmd: 'duck',
+        level: Math.min(1, Math.max(0, settings.duckLevel)),
+        // Chromium plays our tones from an audio-service child process, so the
+        // exempt set has to be the whole tree — they share this executable name.
+        skipName: path.basename(process.execPath, '.exe'),
+      });
+    };
+    // Ducking the whole output turns the start tone down with everything else,
+    // so it waits until the tone has played. Per-app ducking exempts the tone
+    // and can start at once.
+    if (platform.ducking.scope === 'system' && settings.sounds) {
+      this.pending = setTimeout(send, START_TONE_MS);
+    } else {
+      send();
+    }
   }
 
   restore() {
     if (!this.ducked) return;
+    // A duck still waiting on the start tone has changed nothing yet, so
+    // cancelling it is the whole restore.
+    if (this.pending) { this.forget(); return; }
     this.ducked = false;
     this.send({ cmd: 'restore' });
+  }
+
+  forget() {
+    clearTimeout(this.pending);
+    this.pending = null;
+    this.ducked = false;
   }
 
   // Closing stdin is the clean stop: the helper's read loop ends and its

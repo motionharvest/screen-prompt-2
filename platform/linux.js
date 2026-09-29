@@ -217,9 +217,11 @@ module.exports = {
   ducking: {
     supported: true,
     // pactl talks to PulseAudio and to PipeWire's pulse shim, so one code path
-    // covers effectively every current desktop.
-    scope: 'per-app',
-    note: 'Needs pactl (PulseAudio or PipeWire).',
+    // covers effectively every current desktop. It ducks the output device
+    // rather than each app; audio/ducker.py says why.
+    scope: 'system',
+    note: 'Turns the whole output volume down, the same control your desktop '
+      + 'shows. Needs pactl (PulseAudio or PipeWire).',
     command: (pythonPath) => ({
       file: pythonPath,
       args: [path.join(ROOT, 'audio', 'ducker.py')],

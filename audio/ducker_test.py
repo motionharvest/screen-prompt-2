@@ -2,7 +2,7 @@
 
 Ducking is the one feature here that changes state outside the app and has to
 put it back. When it fails to, the result is silent and cumulative: the ducked
-volume becomes the application's remembered volume, and the next recording
+volume becomes the output's remembered volume, and the next recording
 multiplies it down again until everything is inaudible. Every case below is a
 step on that path.
 
@@ -23,34 +23,13 @@ spec = importlib.util.spec_from_file_location("ducker", os.path.join(HERE, "duck
 ducker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ducker)
 
-FIXTURE = """Sink Input #12
-\tMute: no
-\tVolume: front-left: 45875 /  70% / -9.29 dB,   front-right: 65536 / 100% / 0.00 dB
-\tProperties:
-\t\tapplication.process.binary = "firefox"
+SINK = "alsa_output.pci-0000_00_1f.3.analog-stereo"
 
-Sink Input #13
-\tMute: no
-\tVolume: mono: 32768 /  50% / -18.06 dB
-\tProperties:
-\t\tmedia.role = "event"
-\t\tapplication.process.binary = "gsd-media-keys"
+# Channels deliberately unequal, so balance is visible in what gets written.
+FULL = "Volume: front-left: 45875 /  70% / -9.29 dB,   front-right: 65536 / 100% / 0.00 dB\n        balance -0.30\n"
 
-Sink Input #14
-\tMute: no
-\tVolume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100% / 0.00 dB
-\tProperties:
-\t\tapplication.process.binary = "electron"
-"""
-
-# A system already turned down to 5% — what a helper that was killed mid-duck
-# leaves behind.
-DUCKED_FIXTURE = """Sink Input #12
-\tMute: no
-\tVolume: front-left: 3277 /  5% / -26.02 dB,   front-right: 3277 / 5% / -26.02 dB
-\tProperties:
-\t\tapplication.process.binary = "firefox"
-"""
+# An output already at the 2% floor — where repeated lost restores end up.
+DUCKED = "Volume: front-left: 1310 /   2% / -101.95 dB,   front-right: 1310 /   2% / -101.95 dB\n        balance 0.00\n"
 
 failures = []
 
@@ -60,100 +39,129 @@ def check(name, got, want):
         failures.append(f"FAIL  {name}\n      expected {want}\n      got      {got}")
 
 
-def fake_run(fixture, log=None):
+def fake_run(volumes, log=None, sink=SINK):
+    """pactl as seen by the helper: `volumes` maps sink name -> get output."""
+    if isinstance(volumes, str):
+        volumes = {sink: volumes}
+
     def run(argv):
         if log is not None:
             log.append(argv)
-        if argv[:3] == ["pactl", "-f", "json"]:
-            return ""          # force the text parser, as on older pactl
-        if argv[:2] == ["pactl", "list"]:
-            return fixture
+        if argv == ["pactl", "get-default-sink"]:
+            return sink + "\n"
+        if argv[:2] == ["pactl", "get-sink-volume"]:
+            return volumes.get(argv[2], "")
         return ""
     return run
 
 
-# -- parsing ----------------------------------------------------------------
+def writes(log):
+    """Just the volume changes — reading is not a side effect worth asserting."""
+    return [c for c in log if len(c) > 1 and c[1] == "set-sink-volume"]
 
-ducker.run = fake_run(FIXTURE)
-streams = ducker.PulseDucker._streams_from_text()
-check("parses every stream", len(streams), 3)
-check("keeps per-channel volumes", streams[0]["volumes"], [45875, 65536])
-check("reads the binary name", streams[0]["binary"], "firefox")
-check("reads the media role", streams[1]["role"], "event")
 
 # -- ducking ----------------------------------------------------------------
 
 log = []
-ducker.run = fake_run(FIXTURE, log)
-d = ducker.PulseDucker()
+ducker.run = fake_run(FULL, log)
+d = ducker.PulseSinkDucker()
 n = d.duck(0.25, "electron")
-sets = [c for c in log if len(c) > 1 and c[1] == "set-sink-input-volume"]
-check("ducks only the one eligible stream", n, 1)
-check("skips event sounds and our own process, keeps balance",
-      sets, [["pactl", "set-sink-input-volume", "12", "11469", "16384"]])
+check("ducks the default output once", n, 1)
+check("scales each channel, keeping balance",
+      writes(log), [["pactl", "set-sink-volume", SINK, "11469", "16384"]])
 
 log.clear()
 d.restore()
 check("restores the exact originals",
-      log, [["pactl", "set-sink-input-volume", "12", "45875", "65536"]])
+      writes(log), [["pactl", "set-sink-volume", SINK, "45875", "65536"]])
+
+log.clear()
+d.restore()
+check("a second restore writes nothing", writes(log), [])
+
+# The device that was ducked is the one put back, even if the default moved
+# (headphones connected mid-recording).
+log.clear()
+ducker.run = fake_run(FULL, log)
+d = ducker.PulseSinkDucker()
+d.duck(0.25, "electron")
+ducker.run = fake_run(FULL, log, sink="bluez_output.headphones")
+log.clear()
+d.restore()
+check("restores the device it ducked, not the new default",
+      writes(log), [["pactl", "set-sink-volume", SINK, "45875", "65536"]])
+
+# Old pactl without get-default-sink falls back to the alias.
+log.clear()
+ducker.run = fake_run({"@DEFAULT_SINK@": FULL}, log, sink="")
+d = ducker.PulseSinkDucker()
+d.duck(0.25, "electron")
+check("falls back to @DEFAULT_SINK@ on older pactl",
+      writes(log), [["pactl", "set-sink-volume", "@DEFAULT_SINK@", "11469", "16384"]])
 
 # -- the floor ---------------------------------------------------------------
 
 log.clear()
-ducker.run = fake_run(FIXTURE, log)
-d = ducker.PulseDucker()
+ducker.run = fake_run(FULL, log)
+d = ducker.PulseSinkDucker()
 d.duck(0.0, "electron")          # asked for silence
-sets = [c for c in log if len(c) > 1 and c[1] == "set-sink-input-volume"]
 floor = str(int(ducker.MIN_DUCKED * 65536))
 check("never writes true silence, even at level 0",
-      sets, [["pactl", "set-sink-input-volume", "12", floor, floor]])
+      writes(log), [["pactl", "set-sink-volume", SINK, floor, floor]])
 
 # -- the anti-compounding guard ---------------------------------------------
 
 log.clear()
-ducker.run = fake_run(DUCKED_FIXTURE, log)
-d = ducker.PulseDucker()
+ducker.run = fake_run(DUCKED, log)
+d = ducker.PulseSinkDucker()
 n = d.duck(0.05, "electron")
-sets = [c for c in log if len(c) > 1 and c[1] == "set-sink-input-volume"]
-check("does not re-duck an already-ducked stream", n, 0)
-check("...and writes nothing at all", sets, [])
+check("does not re-duck an output already at the floor", n, 0)
+check("...and writes nothing at all", writes(log), [])
+check("...and records nothing to restore", d.state(), [])
+
+log.clear()
+ducker.run = fake_run("", log)
+d = ducker.PulseSinkDucker()
+check("an unreadable output is left alone", (d.duck(0.25, ""), writes(log)), (0, []))
 
 # -- crash recovery ----------------------------------------------------------
 
-def writes(log):
-    """Just the volume changes — enumerating is not a side effect worth asserting."""
-    return [c for c in log if len(c) > 1 and c[1] == "set-sink-input-volume"]
-
-
 log.clear()
-ducker.run = fake_run(DUCKED_FIXTURE, log)
-d = ducker.PulseDucker()
-restored = d.recover([{"binary": "firefox", "volumes": [45875, 65536]}])
-check("recovers a stream a dead process left ducked", restored, 1)
+ducker.run = fake_run(DUCKED, log)
+d = ducker.PulseSinkDucker()
+restored = d.recover([{"sink": SINK, "volumes": [45875, 65536]}])
+check("recovers an output a dead process left ducked", restored, 1)
 check("...back to the recorded originals",
-      writes(log), [["pactl", "set-sink-input-volume", "12", "45875", "65536"]])
+      writes(log), [["pactl", "set-sink-volume", SINK, "45875", "65536"]])
 
 log.clear()
-ducker.run = fake_run(FIXTURE, log)
-d = ducker.PulseDucker()
-restored = d.recover([{"binary": "firefox", "volumes": [1000, 1000]}])
-check("only raises — never pulls down a stream that is already louder",
+ducker.run = fake_run(FULL, log)
+d = ducker.PulseSinkDucker()
+restored = d.recover([{"sink": SINK, "volumes": [1000, 1000]}])
+check("only raises — never pulls down an output that is already louder",
       (restored, writes(log)), (0, []))
 
 log.clear()
-ducker.run = fake_run(DUCKED_FIXTURE, log)
-d = ducker.PulseDucker()
-check("ignores entries for applications that are not running",
-      d.recover([{"binary": "spotify", "volumes": [65536, 65536]}]), 0)
+ducker.run = fake_run(DUCKED, log)
+d = ducker.PulseSinkDucker()
+check("ignores an output that is no longer there",
+      d.recover([{"sink": "usb_output.unplugged", "volumes": [65536, 65536]}]), 0)
+
+log.clear()
+ducker.run = fake_run(DUCKED, log)
+d = ducker.PulseSinkDucker()
+check("ignores entries left by the old per-stream helper",
+      (d.recover([{"index": "12", "binary": "firefox", "volumes": [65536, 65536]}]),
+       writes(log)), (0, []))
 
 # -- the state file ----------------------------------------------------------
 
-ducker.run = fake_run(FIXTURE)
-d = ducker.PulseDucker()
+ducker.run = fake_run(FULL)
+d = ducker.PulseSinkDucker()
 d.duck(0.25, "electron")
 state = d.state()
 check("state carries what recovery needs",
-      state, [{"index": "12", "volumes": [45875, 65536], "binary": "firefox"}])
+      state, [{"sink": SINK, "volumes": [45875, 65536]}])
 
 with tempfile.TemporaryDirectory() as tmp:
     path = os.path.join(tmp, "nested", "duck-state.json")
