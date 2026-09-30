@@ -302,7 +302,7 @@ function openNemotronStream(port, WebSocketImpl = globalThis.WebSocket) {
       type: 'session.update',
       session: {
         sample_rate: 16000,
-        language: 'auto',
+        language: 'en-US',
         automatic_punctuation: true,
       },
     }));

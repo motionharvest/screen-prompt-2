@@ -400,7 +400,7 @@ async function main() {
     const session = JSON.parse(ws.sent[0]);
     assert.strictEqual(session.type, 'session.update');
     assert.strictEqual(session.session.sample_rate, 16000);
-    assert.strictEqual(session.session.language, 'auto');
+    assert.strictEqual(session.session.language, 'en-US');
     assert.deepStrictEqual(ws.sent[1], pcm);
     const pending = stream.end();
     const commit = JSON.parse(ws.sent[2]);
