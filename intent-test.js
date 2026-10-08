@@ -40,7 +40,60 @@ async function main() {
     const entry = intent.keywordEntry({ word: 'claude fable', type: 'keys', target: 'ctrl+m' }, keywordType);
     assert.strictEqual(entry.description, 'The user says “claude fable”');
     assert.strictEqual(entry.type, 'keys');
-    assert.ok(!('word' in entry));
+    assert.strictEqual(entry.trigger, 'jev');
+    assert.strictEqual(entry.word, '');
+  });
+
+  await check('a keyword with a trigger keeps its word and its description', () => {
+    const entry = intent.keywordEntry(
+      { trigger: 'word', word: ' Commander ', description: 'kept', type: 'command', target: 't' },
+      keywordType);
+    assert.strictEqual(entry.trigger, 'word');
+    assert.strictEqual(entry.word, 'Commander');
+    assert.strictEqual(entry.description, 'kept');
+  });
+
+  await check('an unknown trigger reads as Jev', () => {
+    assert.strictEqual(intent.keywordEntry({ trigger: 'nope', description: 'd' }, keywordType).trigger, 'jev');
+  });
+
+  await check('Jev is offered only the keywords it is the trigger for', () => {
+    const actions = intent.describedActions([
+      { trigger: 'word', word: 'go', description: 'Opens things', type: 'url', target: 'u' },
+      { trigger: 'jev', description: 'Searches', type: 'url', target: 'u' },
+    ]);
+    assert.deepStrictEqual(actions.map((a) => a.index), [1]);
+  });
+
+  const WORDS = [
+    { trigger: 'word', word: 'Commander', type: 'command', target: 'x %t' },
+    { trigger: 'word', word: 'hey commander', type: 'url', target: 'u' },
+    { trigger: 'word', word: 'empty', type: 'url', target: '' },
+    { trigger: 'jev', word: 'search', description: 'd', type: 'url', target: 'u' },
+  ];
+
+  await check('a spoken word at the start fires, with the rest as the query', () => {
+    const hit = intent.matchWord('Commander, close all my terminal windows.', WORDS);
+    assert.strictEqual(hit.index, 0);
+    assert.strictEqual(hit.query, 'close all my terminal windows');
+  });
+
+  await check('case and punctuation around the word do not matter', () => {
+    assert.strictEqual(intent.matchWord('…commander: what is this?', WORDS).query, 'what is this');
+  });
+
+  await check('the word fires only whole, and only at the start', () => {
+    assert.strictEqual(intent.matchWord('Commanders are here', WORDS), null);
+    assert.strictEqual(intent.matchWord('I told the Commander', WORDS), null);
+  });
+
+  await check('the longest matching word wins', () => {
+    assert.strictEqual(intent.matchWord('Hey, Commander: open mail', WORDS).index, 1);
+  });
+
+  await check('a word with no target, or on another trigger, never fires', () => {
+    assert.strictEqual(intent.matchWord('empty this', WORDS), null);
+    assert.strictEqual(intent.matchWord('search for cats', WORDS), null);
   });
 
   await check('a description is kept over an old word', () => {

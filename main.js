@@ -25,7 +25,7 @@ const {
 const {
   countWords, countFixes, addClip, pruneDays, seedFromHistory, summarize,
 } = require('./stats');
-const { typesafeApiKey, keywordEntry, classifyIntent } = require('./intent');
+const { typesafeApiKey, keywordEntry, classifyIntent, matchWord } = require('./intent');
 const { createCueCounter } = require('./markers');
 const { fill, hasPlaceholder } = require('./command');
 
@@ -55,7 +55,9 @@ const DEFAULT_SETTINGS = {
   // Ask Jev whether each dictation is a keyword. Off, every transcript is
   // typed straight away and nothing waits on TypeSafe.
   keywordsEnabled: true,
-  keywords: [],              // [{description, type: 'url'|'command'|'keys'|'alias', target, group}]
+  // [{trigger: 'jev'|'word'|'key', description, word, shortcut,
+  //   type: 'url'|'command'|'keys'|'alias', target, group}]
+  keywords: [],
   keywordGroups: [],
   // Words the model reliably mishears, and how they should be spelled instead.
   dictionary: [],            // [{from, to}]
@@ -475,11 +477,18 @@ function trace(...parts) {
 // Port of the old project's HotkeyManager: match raw keycodes ourselves so a
 // lone modifier (right Ctrl is popular for push-to-talk) is a usable shortcut,
 // and Ctrl+C never trips a binding on Ctrl alone.
+//
+// One matcher listens for one shortcut. The push-to-talk key has one, and so
+// does every keyword that has a key of its own; each sees every key event and
+// keeps its own idea of what is held, so they never have to agree on anything.
+// The callbacks are handed the matcher itself, which is how the recording
+// knows which key started it.
 class ShortcutMatcher {
-  constructor(onPress, onRelease, onAbort) {
-    this.onPress = onPress;
-    this.onRelease = onRelease;
-    this.onAbort = onAbort;
+  constructor(getShortcut, { onPress, onRelease, onAbort }) {
+    this.getShortcut = getShortcut;
+    this.onPress = () => onPress(this);
+    this.onRelease = () => onRelease(this);
+    this.onAbort = () => onAbort(this);
     this.heldGroups = new Set();   // modifier groups currently down
     this.heldRaw = new Set();      // exact keycodes down
     this.usedMods = new Set();     // modifiers that joined a combination
@@ -491,7 +500,7 @@ class ShortcutMatcher {
     this.speculative = false;
   }
 
-  get sc() { return settings.shortcut; }
+  get sc() { return this.getShortcut(); }
 
   anyKeysHeld() { return this.heldRaw.size > 0 || this.fired.size > 0; }
 
@@ -611,6 +620,12 @@ class ShortcutMatcher {
 //             fire while you type.
 //   chord     one step of a keyword's macro. Bare keys are allowed, because
 //             this is only ever sent, never listened for.
+//   binding   a keyword's own key. The same rules as the push-to-talk key,
+//             because it is listened for in the same way; the result goes back
+//             to the settings window, which stores it on the keyword.
+//
+// A key that is already push-to-talk or another keyword's is refused, and the
+// recorder keeps listening for a different one.
 //
 // Both capture one combination and then stop. A macro is a list of steps in
 // the settings window, so recording more than one press at a time would be a
@@ -625,8 +640,11 @@ class ShortcutCapture {
     this.anyKeyPressed = false;
   }
 
-  start(mode = 'shortcut') {
-    this.mode = mode === 'chord' ? 'chord' : 'shortcut';
+  // `index` is the keyword a binding is for, so its own current key is not
+  // counted as taken.
+  start(mode = 'shortcut', index = -1) {
+    this.mode = ['chord', 'binding'].includes(mode) ? mode : 'shortcut';
+    this.index = index;
     this.active = true;
     this.heldGroups.clear();
     this.pendingLone = null;
@@ -642,6 +660,7 @@ class ShortcutCapture {
   heldDisplay() {
     const held = MOD_ORDER.filter((m) => this.heldGroups.has(m));
     if (this.mode === 'chord') return held.length ? `${held.join('+')}+…` : '';
+    if (this.mode === 'binding') return held.length ? `${held.map((m) => MOD_PRETTY[m]).join(' + ')} + …` : '';
     const parts = held.map((m) => MOD_PRETTY[m]);
     return parts.length ? parts.join(' + ') + ' + …' : 'Press a shortcut…';
   }
@@ -685,8 +704,33 @@ class ShortcutCapture {
     this.onEvent({ type: 'held', display: this.heldDisplay() });
   }
 
+  // Who already listens for `sc`, or '' when nobody does.
+  takenBy(sc) {
+    if (this.mode !== 'shortcut' && sameShortcut(sc, settings.shortcut)) return 'push-to-talk';
+    const other = settings.keywords.findIndex((entry, i) => i !== this.index
+      && entry.trigger === 'key' && sameShortcut(sc, entry.shortcut));
+    if (other === -1) return '';
+    // Named by what it does: its key is the very thing being reported.
+    const target = settings.keywords[other].target.replace(/\s+/g, ' ').trim();
+    return `the keyword that runs “${target.length > 40 ? `${target.slice(0, 39).trimEnd()}…` : target}”`;
+  }
+
   commit(sc) {
+    if (this.mode !== 'chord') {
+      const owner = this.takenBy(sc);
+      if (owner) {
+        this.heldGroups.clear();
+        this.pendingLone = null;
+        this.anyKeyPressed = false;
+        this.onEvent({ type: 'error', message: `${prettyShortcut(sc)} already belongs to ${owner}. Press another.` });
+        return;
+      }
+    }
     this.active = false;
+    if (this.mode === 'binding') {
+      this.onEvent({ type: 'binding', shortcut: sc, pretty: prettyShortcut(sc) });
+      return;
+    }
     if (this.mode === 'chord') {
       const text = chordText(sc);
       this.onEvent(text
@@ -696,6 +740,7 @@ class ShortcutCapture {
     }
     settings.shortcut = sc;
     saveSettings();
+    rebuildKeywordMatchers();
     this.onEvent({ type: 'done', pretty: prettyShortcut(sc) });
   }
 }
@@ -1986,32 +2031,66 @@ const keywordType = (value) => (KEYWORD_TYPES.has(value) ? value : 'url');
 const GROUP_NAME_MAX = 40;
 const MAX_KEYWORD_GROUPS = 32;
 
+// A shortcut read back from the file, or null. Kept only if it is one the
+// recorder could have produced, so a hand-edited file cannot bind something
+// that fires while you type.
+function savedShortcut(raw) {
+  if (!raw || typeof raw.keycode !== 'number' || !KEYCODE_NAMES.has(raw.keycode)) return null;
+  const mods = Array.isArray(raw.mods) ? MOD_ORDER.filter((m) => raw.mods.includes(m)) : [];
+  const isModifier = Boolean(raw.isModifier) && MOD_GROUPS.has(raw.keycode);
+  if (!isModifier && !mods.length && !SAFE_ALONE.has(raw.keycode)) return null;
+  return {
+    mods: isModifier ? [] : mods, keycode: raw.keycode, isModifier,
+    keyName: String(raw.keyName || prettyKeyName(raw.keycode)),
+  };
+}
+
+function sameShortcut(a, b) {
+  return Boolean(a && b) && a.keycode === b.keycode && Boolean(a.isModifier) === Boolean(b.isModifier)
+    && a.mods.length === b.mods.length && a.mods.every((m) => b.mods.includes(m));
+}
+
 function savedKeywords(list) {
   return (Array.isArray(list) ? list : []).slice(0, 64).map((entry) => ({
     ...keywordEntry(entry, keywordType),
+    shortcut: savedShortcut(entry && entry.shortcut),
     group: String(entry && entry.group || '').trim().slice(0, GROUP_NAME_MAX),
   }));
 }
 
-function keywordName(description) {
-  const flat = description.replace(/\s+/g, ' ').trim();
+// What the overlay calls a keyword: whatever its trigger is.
+function keywordName(entry) {
+  if (entry.trigger === 'key') return prettyShortcut(entry.shortcut);
+  const flat = String(entry.trigger === 'word' ? entry.word : entry.description)
+    .replace(/\s+/g, ' ').trim();
   return flat.length > 40 ? `${flat.slice(0, 39).trimEnd()}…` : flat;
 }
 
+function runnableKeyword(entry, query, transcript) {
+  return {
+    word: keywordName(entry),
+    type: keywordType(entry.type),
+    target: entry.target,
+    query,
+    transcript,
+  };
+}
+
+// A spoken word is checked first: it is certain, it is free, and it needs no
+// key. Only a sentence that starts with none of them is sent to Jev.
 async function matchKeyword(text) {
   if (!settings.keywordsEnabled) return null;
+  const spoken = matchWord(text, settings.keywords);
+  if (spoken) {
+    trace('keyword word', spoken.word);
+    return runnableKeyword(spoken, spoken.query, text);
+  }
   const apiKey = typesafeApiKey(settings);
   if (!apiKey) return null;
   const intent = await classifyIntent(text, settings.keywords, apiKey);
   if (!intent) return null;
   trace('keyword', intent.description, 'p=' + intent.probability.toFixed(2));
-  return {
-    word: keywordName(intent.description),
-    type: keywordType(intent.type),
-    target: intent.target,
-    query: intent.query,
-    transcript: text,
-  };
+  return runnableKeyword(intent, intent.query, text);
 }
 
 const LAUNCH_GRACE_MS = 200;    // long enough to catch a bad path
@@ -2168,9 +2247,19 @@ function broadcastState() {
   }
 }
 
-function startRecording() {
+// The matcher whose key started the recording in progress, and the keyword it
+// belongs to, if any. A keyword's own key sends the sentence straight to that
+// keyword: there is nothing to decide, so neither the spoken words nor Jev are
+// consulted, and both %s and %t are the whole sentence. The keyword is a copy
+// taken at the press, so editing it mid-sentence cannot change what runs.
+let recordingBy = null;
+let recordingKeyword = null;
+
+function startRecording(by = null) {
   trace('startRecording', 'state=' + appState);
   if (appState !== 'idle') return;
+  recordingBy = by;
+  recordingKeyword = by && by.keyword ? { ...by.keyword } : null;
   const status = transcriptionStatus(settings, activeSidecar());
   if (status.state === 'error') {
     showOverlay({ resting: false });
@@ -2221,14 +2310,17 @@ function stopRecording() {
   broadcastState();
 }
 
-function onShortcutPress() {
-  if (settings.mode === 'hold') { startRecording(); return; }
-  if (appState === 'idle') startRecording();
+// Any of the keys stops a toggle recording, whichever started it: the second
+// press means "done", and making you find the same key again would only add a
+// way to get it wrong. A hold recording belongs to the key being held.
+function onShortcutPress(by) {
+  if (settings.mode === 'hold') { startRecording(by); return; }
+  if (appState === 'idle') startRecording(by);
   else if (appState === 'recording') stopRecording();
 }
 
-function onShortcutRelease() {
-  if (settings.mode === 'hold') stopRecording();
+function onShortcutRelease(by) {
+  if (settings.mode === 'hold' && by === recordingBy) stopRecording();
 }
 
 // Bumped by every cancellation. A transcription already in flight compares the
@@ -2264,9 +2356,9 @@ function cancelEverything() {
 // Only a recording is undone. If the press was the second tap of a toggle the
 // state is already 'processing' — the audio is on its way to the model and
 // stopping that would lose what you actually said.
-function onShortcutAbort() {
+function onShortcutAbort(by) {
   trace('onShortcutAbort', 'state=' + appState);
-  if (appState !== 'recording') return;
+  if (appState !== 'recording' || by !== recordingBy) return;
   abortLiveStream();
   stopFollowingCursor();
   ducker.restore();
@@ -2319,6 +2411,7 @@ async function handleAudio(buffer, duration, cancelled, error) {
     finishOverlay({ cmd: 'cancel', sounds: settings.sounds }, 600);
     return;
   }
+  const bound = recordingKeyword;
   const stream = liveStream;
   const wavPath = stream ? null : path.join(os.tmpdir(), `screen-prompt-2-${Date.now()}.wav`);
   // Captured before the await, compared after it. Escape during "Transcribing…"
@@ -2361,13 +2454,17 @@ async function handleAudio(buffer, duration, cancelled, error) {
     // something to type.
     let keyword = null;
     let intentError = '';
-    try {
-      keyword = await matchKeyword(text);
-    } catch (err) {
-      intentError = err.name === 'TimeoutError'
-        ? 'TypeSafe did not answer in time.'
-        : String(err.message || err);
-      trace('keyword failed', intentError);
+    if (bound) {
+      keyword = runnableKeyword(bound, text, text);
+    } else {
+      try {
+        keyword = await matchKeyword(text);
+      } catch (err) {
+        intentError = err.name === 'TimeoutError'
+          ? 'TypeSafe did not answer in time.'
+          : String(err.message || err);
+        trace('keyword failed', intentError);
+      }
     }
     if (generation !== cancelGeneration) {
       trace('handleAudio abandoned', 'cancelled while matching keywords');
@@ -2452,13 +2549,13 @@ async function deliver(text) {
       // keystrokes. The low-level hook also has to be down while we inject
       // Unicode, or those events come back as scan codes and land as junk.
       await waitForKeysReleased(2000);
-      matcher.enabled = false;
+      setMatchersEnabled(false);
       try { uIOhook.stop(); } catch { /* already down */ }
       try {
         await platform.typeText(text);
         return 'Typed';
       } finally {
-        matcher.enabled = true;
+        setMatchersEnabled(true);
         try { uIOhook.start(); } catch { /* start failed; shortcut is dead until relaunch */ }
       }
     } catch (err) {
@@ -2515,7 +2612,7 @@ function waitForKeysReleased(timeoutMs) {
   return new Promise((resolve) => {
     const t0 = Date.now();
     const poll = () => {
-      if (!matcher.anyKeysHeld() || Date.now() - t0 > timeoutMs) resolve();
+      if (!allMatchers().some((m) => m.anyKeysHeld()) || Date.now() - t0 > timeoutMs) resolve();
       else setTimeout(poll, 50);
     };
     poll();
@@ -2524,10 +2621,41 @@ function waitForKeysReleased(timeoutMs) {
 
 // --------------------------------------------------------------------- IPC --
 
-const matcher = new ShortcutMatcher(onShortcutPress, onShortcutRelease, onShortcutAbort);
+const MATCHER_EVENTS = {
+  onPress: onShortcutPress, onRelease: onShortcutRelease, onAbort: onShortcutAbort,
+};
+const matcher = new ShortcutMatcher(() => settings.shortcut, MATCHER_EVENTS);
+
+// One per keyword with a key of its own, rebuilt whenever the keywords change.
+// A key already taken — by push-to-talk or by an earlier keyword — is skipped
+// rather than bound twice: two matchers on one key would start a toggle
+// recording and stop it again on the same press. The recorder refuses such a
+// key in the first place, so this only guards a hand-edited file.
+let keywordMatchers = [];
+
+function rebuildKeywordMatchers() {
+  const taken = [settings.shortcut];
+  keywordMatchers = [];
+  for (const entry of settings.keywords) {
+    const sc = entry.trigger === 'key' && entry.target ? entry.shortcut : null;
+    if (!sc || taken.some((other) => sameShortcut(other, sc))) continue;
+    taken.push(sc);
+    const m = new ShortcutMatcher(() => sc, MATCHER_EVENTS);
+    m.keyword = entry;
+    m.enabled = matcher.enabled;
+    keywordMatchers.push(m);
+  }
+}
+
+const allMatchers = () => [matcher, ...keywordMatchers];
+
+function setMatchersEnabled(on) {
+  for (const m of allMatchers()) m.enabled = on;
+}
+
 const capture = new ShortcutCapture((event) => {
   if (!capture.active) releaseKeyboard();
-  matcher.enabled = !capture.active;
+  setMatchersEnabled(!capture.active);
   captureSend(event);
   if (event.type === 'done') broadcastState();
 });
@@ -2536,7 +2664,9 @@ const capture = new ShortcutCapture((event) => {
 // not flicker while a keyword's combination is being recorded.
 function captureSend(event) {
   if (!settingsWin || settingsWin.isDestroyed()) return;
-  const channel = capture.mode === 'chord' ? 'chord:capture:event' : 'shortcut:capture:event';
+  // A keyword's key is recorded in the keyword's row, by the same field
+  // machinery as a macro step, so it shares that channel.
+  const channel = capture.mode === 'shortcut' ? 'shortcut:capture:event' : 'chord:capture:event';
   settingsWin.webContents.send(channel, event);
 }
 
@@ -2555,7 +2685,7 @@ let captureToken = 0;
 // hold it, recording starts anyway and the keys do both — which is how this
 // worked before there was a grab at all, and is still better than refusing to
 // record.
-async function beginCapture(mode) {
+async function beginCapture(mode, index = -1) {
   if (capture.active) return;
   const token = ++captureToken;
   // Set before the wait as well as by start(), so anything that asks to stop
@@ -2581,7 +2711,7 @@ async function beginCapture(mode) {
     }
   }
   if (token !== captureToken) { releaseKeyboard(); return; }
-  capture.start(mode);
+  capture.start(mode, index);
 }
 
 // Stops a recording, wherever the reason came from, and lets the keyboard go.
@@ -2589,13 +2719,13 @@ function endCapture() {
   captureToken += 1;
   capture.cancel();
   releaseKeyboard();
-  matcher.enabled = true;
+  setMatchersEnabled(true);
 }
 
-// Only the keyword recorder. Cancelling a shortcut capture is the settings
+// Only the keyword recorders. Cancelling a shortcut capture is the settings
 // window's own business, and it has a Cancel button that says so.
 function endChordCapture() {
-  if (capture.mode !== 'chord') return;
+  if (capture.mode === 'shortcut') return;
   endCapture();
 }
 
@@ -2613,7 +2743,11 @@ ipcMain.handle('settings:get', () => {
     mode: settings.mode, output: settings.output, sounds: settings.sounds,
     launchAtStartup: launchAtStartupEnabled(), model: settings.model,
     theme: settings.theme, duck: settings.duck, duckLevel: settings.duckLevel,
-    tidy: settings.tidy, keywords: settings.keywords,
+    tidy: settings.tidy,
+    // The key is spelled here because only main knows this OS's key names.
+    keywords: settings.keywords.map((k) => ({
+      ...k, keyPretty: k.shortcut ? prettyShortcut(k.shortcut) : '',
+    })),
     keywordsEnabled: settings.keywordsEnabled,
     keywordGroups: settings.keywordGroups,
     dictionary: settings.dictionary,
@@ -2687,6 +2821,7 @@ ipcMain.handle('settings:set', (_e, partial) => {
     // Half-filled rows are kept rather than dropped — you are probably still
     // typing one — and simply never match until both halves are there.
     settings.keywords = savedKeywords(partial.keywords);
+    rebuildKeywordMatchers();
   }
   if (Array.isArray(partial.keywordGroups)) {
     const groups = [];
@@ -2849,6 +2984,7 @@ ipcMain.handle('shortcut:capture:cancel', () => endCapture());
 // loses it, so there is no separate button to forget to press — and stopping
 // has nothing to commit, because each chord was already sent as it landed.
 ipcMain.handle('chord:capture:start', () => beginCapture('chord'));
+ipcMain.handle('binding:capture:start', (_e, index) => beginCapture('binding', Number(index)));
 ipcMain.handle('chord:capture:stop', () => endChordCapture());
 
 ipcMain.on('overlay:pcm', (_e, chunk) => {
@@ -2870,6 +3006,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     loadSettings();
+    rebuildKeywordMatchers();
     loadHistory();
     loadStats();
     // Hide the dock icon on macOS, before any window exists to put one there.
@@ -2910,7 +3047,7 @@ if (!gotLock) {
       // rest of the time — and it is observed rather than swallowed either way,
       // so the focused app still receives it.
       if (e.keycode === UiohookKey.Escape && (cancelDrawing() || cancelEverything())) return;
-      matcher.keydown(e.keycode);
+      for (const m of allMatchers()) m.keydown(e.keycode);
     });
     uIOhook.on('keyup', (e) => {
       if (BOX_KEYS.has(e.keycode)) onBoxKey(false);
@@ -2918,13 +3055,13 @@ if (!gotLock) {
         trace('hook up', e.keycode, 'capturing=' + capture.active, 'state=' + appState);
       }
       if (capture.active) { if (!grabbed) capture.keyup(e.keycode); }
-      else matcher.keyup(e.keycode);
+      else for (const m of allMatchers()) m.keyup(e.keycode);
     });
     uIOhook.start();
     for (const event of ['lock-screen', 'unlock-screen', 'suspend', 'resume']) {
       powerMonitor.on(event, () => {
         trace('session', event, 'heldRaw=[' + [...matcher.heldRaw] + ']');
-        matcher.reset();
+        for (const m of allMatchers()) m.reset();
         onBoxKey(false);
       });
     }

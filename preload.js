@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   onCaptureEvent: (fn) => ipcRenderer.on('shortcut:capture:event', (_e, ev) => fn(ev)),
   chordStart: () => ipcRenderer.invoke('chord:capture:start'),
   chordStop: () => ipcRenderer.invoke('chord:capture:stop'),
+  bindingStart: (index) => ipcRenderer.invoke('binding:capture:start', index),
   onChordEvent: (fn) => ipcRenderer.on('chord:capture:event', (_e, ev) => fn(ev)),
   onState: (fn) => ipcRenderer.on('state', (_e, s) => fn(s)),
   onSettingsChanged: (fn) => ipcRenderer.on('settings-changed', (_e, p) => fn(p)),

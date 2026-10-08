@@ -511,22 +511,47 @@ collapsed before it is looked up, and Jev reads the corrected words.
 
 ## Keywords
 
-A keyword is a description of what it does, such as “Searches Google for
+A keyword is a trigger and an action. The action is what it does — open a URL,
+run a command, run a keyboard macro, or paste an alias — and the trigger is what
+makes it fire. There are three triggers, and any of them can run any action.
+When a keyword fires the text is not copied or pasted: the words were an
+instruction, not something to type.
+
+A **Jev description** says what the keyword does, such as “Searches Google for
 whatever the user asks about” or “Changes the current model inside Claude Code
-to Fable”. After every dictation the transcript and the descriptions go to
+to Fable”. After a dictation the transcript and the descriptions go to
 TypeSafe's Jev model in one request, which asks two things. The first is
 whether you were dictating text or asking for one of the described actions.
 The second picks the words the action should act on, chosen from the stretches
 of what you said that run to its end, so “please search for tacos” gives the
 query “tacos”. An action runs only when Jev gives it a probability of at least
-0.6; anything less is typed as dictation. When a keyword fires the text is not
-copied or pasted: the words were an instruction, not something to type.
+0.6; anything less is typed as dictation. This is the flexible trigger, and it
+is a judgment, so a sentence the description did not anticipate can fall
+through to dictation.
 
-Keywords need a TypeSafe API key, entered at the top of the Keywords tab. With
-no key, or no keywords, nothing is sent and every dictation is typed. If the
-request fails, the dictation is typed and the overlay says why keywords did not
-run. A keyword saved by an older version, which only had a spoken word, is read
-as the description “The user says ‘word’” until you rewrite it.
+A **Keyword** is a word or phrase the sentence starts with, such as
+“Commander”. It is matched without a model: case, punctuation and spacing do
+not matter, it has to be the whole word (“Commanders” does not fire it), and
+it has to come first. The rest of the sentence is the query, so “Commander,
+close my terminals” gives the query “close my terminals”. When two match, the
+longer one wins. Spoken keywords are checked before Jev, and need no API key.
+
+A **Record key** is a shortcut of the keyword's own, recorded in its row the
+same way the push-to-talk key is. Recording with it instead of push-to-talk
+sends what you say straight to that keyword: nothing is matched or decided, and
+the query is the whole sentence. It starts and stops a recording exactly as
+push-to-talk does, in toggle or hold mode, and in toggle mode either key stops
+it. A key already used by push-to-talk or by another keyword is refused when you
+record it.
+
+Jev descriptions need a TypeSafe API key, entered at the top of the Keywords
+tab. What you said is sent only when no spoken keyword matched and at least one
+Jev description exists; otherwise nothing is sent. If the request fails, the
+dictation is typed and the overlay says why keywords did not run. The switch at
+the top of the tab turns off spoken keywords and Jev; record keys still work,
+because pressing one is already the decision. A keyword saved by an older
+version, which only had a spoken word, is read as the Jev description “The user
+says ‘word’” until you rewrite it.
 
 | Type | Target | Result of “Google, capital of Indiana” |
 | --- | --- | --- |

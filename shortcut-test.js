@@ -50,11 +50,11 @@ function build({ shortcut, mode }) {
   const Matcher = ctx.module.exports;
 
   const events = [];
-  const matcher = new Matcher(
-    () => events.push('press'),
-    () => events.push('release'),
-    () => events.push('abort'),
-  );
+  const matcher = new Matcher(() => ctx.settings.shortcut, {
+    onPress: () => events.push('press'),
+    onRelease: () => events.push('release'),
+    onAbort: () => events.push('abort'),
+  });
   return { matcher, events };
 }
 

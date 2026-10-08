@@ -118,6 +118,9 @@ let keywordGroups = [];
 // as a URL, which is the harmless one — the same rule main applies.
 const KEYWORD_TYPES = ['url', 'command', 'keys', 'alias'];
 
+// What fires a keyword; main reads anything else as Jev, and so does this.
+const TRIGGERS = ['jev', 'word', 'key'];
+
 // Only the three types that have a single target field need one. The command
 // example is replaced at init with one that exists on this OS — a Windows path
 // shown as the hint on a Mac is worse than no hint.
@@ -153,7 +156,10 @@ let recorder = null;
 // until main says the keyboard is held, because saying so early would be a lie
 // in the one direction that matters: a key pressed before the hook is up has
 // already gone to the shell.
-async function startRecording(input, onChord) {
+//
+// The same field records a macro step or a keyword's own key; `begin` is what
+// tells main which, and `onChord` receives the step text or the key.
+async function startRecording(input, onChord, begin = () => window.api.chordStart()) {
   stopRecording(true);
   const mine = { input, onChord, previous: input.value, captured: false };
   recorder = mine;
@@ -161,7 +167,7 @@ async function startRecording(input, onChord) {
   input.placeholder = HOLDING;
   input.classList.add('recording');
   $('chord-error').style.display = 'none';
-  await window.api.chordStart();
+  await begin();
   if (recorder !== mine) return;          // clicked away while it was starting
   input.placeholder = PRESS;
 }
@@ -197,6 +203,14 @@ window.api.onChordEvent((ev) => {
       recorder.input.value = ev.text;
       stopRecording();
       onChord(ev.text);
+      break;
+    }
+    case 'binding': {
+      const { onChord } = recorder;
+      recorder.captured = true;
+      recorder.input.value = ev.pretty;
+      stopRecording();
+      onChord(ev);
       break;
     }
     case 'cancelled':
@@ -450,13 +464,13 @@ function uniqueGroupName(base) {
 }
 
 function focusKeyword(index) {
-  $('keyword-list').querySelector(`.kw[data-index="${index}"] .kw-desc`)?.focus();
+  $('keyword-list').querySelector(`.kw[data-index="${index}"] .kw-when`)?.focus();
 }
 
 function addKeyword(group) {
   stopRecording();
   shutGroups.delete(group);
-  keywords.push({ description: '', type: 'url', target: '', group });
+  keywords.push({ trigger: 'jev', description: '', type: 'url', target: '', group });
   renderKeywords();
   focusKeyword(keywords.length - 1);
 }
@@ -646,7 +660,11 @@ function keywordRow(index, group) {
   row.dataset.index = String(index);
   row.innerHTML = `
     <span class="kw-grip" title="Drag into a group, or up and down">&#x283f;</span>
-    <textarea class="kw-desc" rows="2" placeholder="Searches Google for whatever the user asks about"></textarea>
+    <select class="kw-trigger">
+      <option value="jev">Jev description</option>
+      <option value="word">Keyword</option>
+      <option value="key">Record key</option>
+    </select>
     <select class="kw-type">
       <option value="url">Open a URL</option>
       <option value="command">Run a command</option>
@@ -658,10 +676,11 @@ function keywordRow(index, group) {
   `;
   // Values are assigned as properties rather than interpolated into the
   // markup above, so a keyword containing quotes cannot break out of it.
-  const desc = row.querySelector('.kw-desc');
+  const trigger = row.querySelector('.kw-trigger');
   const type = row.querySelector('.kw-type');
   const target = row.querySelector('.kw-target');
-  desc.value = keyword.description || '';
+  trigger.value = TRIGGERS.includes(keyword.trigger) ? keyword.trigger : 'jev';
+  row.insertBefore(triggerField(index, trigger.value), type);
   type.value = KEYWORD_TYPES.includes(keyword.type) ? keyword.type : 'url';
   target.value = keyword.target || '';
   target.placeholder = PLACEHOLDER[type.value] || '';
@@ -674,11 +693,14 @@ function keywordRow(index, group) {
   // one's, so the row is handed over whole.
   if (macro) buildMacro(index, row);
 
-  // 'change' rather than 'input': it fires on blur, so a settings write does
-  // not happen on every keystroke.
-  desc.addEventListener('change', () => {
-    keywords[index].description = desc.value.trim();
+  // The other triggers' text stays on the keyword, so switching back to one
+  // finds it as it was left.
+  trigger.addEventListener('change', () => {
+    stopRecording();
+    keywords[index].trigger = trigger.value;
     saveKeywords();
+    renderKeywords();
+    focusKeyword(index);
   });
   if (!macro) {
     target.addEventListener('change', () => {
@@ -708,6 +730,56 @@ function keywordRow(index, group) {
   });
   dragRow(row, index, group);
   return row;
+}
+
+// The field beside the trigger choice: a description for Jev to read, the
+// word a sentence has to start with, or the keyword's own key. 'change' rather
+// than 'input' for the text fields: it fires on blur, so a settings write does
+// not happen on every keystroke.
+function triggerField(index, kind) {
+  const keyword = keywords[index];
+  if (kind === 'key') {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'kw-when step-keys';
+    input.readOnly = true;
+    input.spellcheck = false;
+    input.placeholder = PRESS_IDLE;
+    input.value = keyword.keyPretty || '';
+    input.title = 'Recording with this key sends what you say straight to this keyword';
+    input.addEventListener('focus', () => startRecording(input, (ev) => {
+      keywords[index].shortcut = ev.shortcut;
+      keywords[index].keyPretty = ev.pretty;
+      saveKeywords();
+    }, () => window.api.bindingStart(index)));
+    input.addEventListener('blur', () => stopRecording());
+    input.addEventListener('keydown', (e) => e.preventDefault());
+    return input;
+  }
+  if (kind === 'word') {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'kw-when';
+    input.spellcheck = false;
+    input.placeholder = 'Commander';
+    input.value = keyword.word || '';
+    input.title = 'Fires when what you say starts with this; the rest becomes %s';
+    input.addEventListener('change', () => {
+      keywords[index].word = input.value.trim();
+      saveKeywords();
+    });
+    return input;
+  }
+  const desc = document.createElement('textarea');
+  desc.className = 'kw-when kw-desc';
+  desc.rows = 2;
+  desc.placeholder = 'Searches Google for whatever the user asks about';
+  desc.value = keyword.description || '';
+  desc.addEventListener('change', () => {
+    keywords[index].description = desc.value.trim();
+    saveKeywords();
+  });
+  return desc;
 }
 
 function renderKeywords() {
@@ -753,6 +825,7 @@ $('group-add').addEventListener('click', () => {
 $('launch-add').addEventListener('click', () => {
   if ($('launch-add').disabled) return;
   keywords.push({
+    trigger: 'jev',
     description: 'Starts an application the user names, such as “launch Spotify”',
     type: 'command', target: launchAppTarget, group: '',
   });

@@ -11,17 +11,34 @@ function typesafeApiKey(settings) {
   return String(settings && settings.typesafeApiKey || '').trim();
 }
 
+// What makes a keyword fire. Each is kept apart from the action, so any
+// trigger can run any action:
+//
+//   jev   Jev reads the sentence and decides whether it asks for the action
+//         described. Flexible, and a judgment.
+//   word  the sentence starts with this word or phrase. No model involved: it
+//         either does or it does not.
+//   key   a shortcut of its own. Recording with it sends the sentence to this
+//         keyword and nothing decides anything.
+const TRIGGERS = new Set(['jev', 'word', 'key']);
+const WORD_MAX = 60;
+
 /**
- * Normalizes one saved keyword. An entry from before descriptions existed has
- * only a spoken `word`, which becomes a description of saying that word.
+ * Normalizes one saved keyword. An entry from before triggers existed is a Jev
+ * keyword; one from before descriptions existed has only a spoken `word`, which
+ * becomes a description of saying that word. The text of every trigger is
+ * kept whichever one is chosen, so switching back loses nothing.
  */
 function keywordEntry(entry, keywordType) {
   const raw = entry || {};
+  const legacy = !TRIGGERS.has(raw.trigger);
   const word = String(raw.word || '').trim();
   const description = String(raw.description || '').trim()
-    || (word ? `The user says “${word}”` : '');
+    || (legacy && word ? `The user says “${word}”` : '');
   return {
+    trigger: legacy ? 'jev' : raw.trigger,
     description: description.slice(0, DESCRIPTION_MAX),
+    word: legacy ? '' : word.slice(0, WORD_MAX),
     type: keywordType(raw.type),
     target: String(raw.target || '').trim(),
   };
@@ -36,6 +53,7 @@ function takesQuery(entry) {
 function describedActions(keywords) {
   const out = [];
   (keywords || []).forEach((entry, index) => {
+    if (entry && entry.trigger && entry.trigger !== 'jev') return;
     const description = String(entry && entry.description || '').trim();
     const target = String(entry && entry.target || '').trim();
     if (description && target) out.push({ ...entry, description, target, index });
@@ -56,6 +74,36 @@ function queryCandidates(text) {
     if (rest && !out.some((c) => c.text === rest)) out.push({ id: `q${out.length}`, text: rest });
   }
   return out;
+}
+
+// The words of a spoken keyword, matched whatever punctuation or spacing the
+// transcription put between them, at the very start of the sentence and only
+// as whole words: "Commander" does not fire on "Commanders". Splitting on
+// everything but letters and digits leaves nothing a regex would read.
+function wordPattern(word) {
+  const parts = word.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  if (!parts.length) return null;
+  return new RegExp(`^[^\\p{L}\\p{N}]*${parts.join('[^\\p{L}\\p{N}]+')}(?![\\p{L}\\p{N}])`, 'iu');
+}
+
+/**
+ * The keyword whose spoken word starts `text`, with the rest of the sentence
+ * as its query, or null. The longest word wins, so "hey commander" is chosen
+ * over "hey" when both are set.
+ */
+function matchWord(text, keywords) {
+  let best = null;
+  (keywords || []).forEach((entry, index) => {
+    if (!entry || entry.trigger !== 'word') return;
+    const word = String(entry.word || '').trim();
+    const target = String(entry.target || '').trim();
+    const pattern = word && target && wordPattern(word);
+    const m = pattern && pattern.exec(text);
+    if (!m || (best && best.length >= m[0].length)) return;
+    best = { length: m[0].length, entry: { ...entry, word, target, index } };
+  });
+  if (!best) return null;
+  return { ...best.entry, query: trimQuery(text.slice(best.length)), probability: 1 };
 }
 
 function actionKey(n) {
@@ -147,5 +195,5 @@ async function classifyIntent(text, keywords, apiKey, fetchImpl = fetch) {
 
 module.exports = {
   ACTION_THRESHOLD, typesafeApiKey, keywordEntry, takesQuery, describedActions,
-  queryCandidates, buildIntentRequest, readIntent, classifyIntent,
+  matchWord, queryCandidates, buildIntentRequest, readIntent, classifyIntent,
 };
