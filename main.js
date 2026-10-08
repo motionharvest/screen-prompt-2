@@ -2012,15 +2012,6 @@ async function matchKeyword(text) {
   };
 }
 
-// Quote-aware split, so a command target can name a path with spaces.
-function splitArgs(line) {
-  const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = re.exec(line)) !== null) out.push(m[1] ?? m[2] ?? m[3]);
-  return out;
-}
-
 const LAUNCH_GRACE_MS = 200;    // long enough to catch a bad path
 const LAUNCH_WATCH_MS = 5000;   // ...and a launcher that fails just after it
 const CHORD_GAP_MS = 25;        // the floor between two presses in a row
@@ -2032,9 +2023,8 @@ function exitMessage(code, stderr) {
   return first ? first.slice(0, 140) : `Command exited with code ${code}.`;
 }
 
-// Spawned without a shell, so nothing in the spoken query can be read as a
-// shell operator — the words become one argument, whatever is in them. Point
-// the target at `cmd /c ...` yourself if you actually want shell syntax.
+// `argv` comes from the platform's `commandArgv`, which keeps the spoken query
+// out of anything a shell parses; see command.js.
 //
 // Deliberately not `detached`. On Windows that flag is DETACHED_PROCESS, which
 // denies the child a console — and a console program handed no console exits 0
@@ -2117,7 +2107,7 @@ async function runKeyword(keyword) {
     return `✓ ${verb} ${pretty}`;
   }
   if (keyword.type === 'command') {
-    const argv = splitArgs(keyword.target).map((arg) => arg.replace(/%s/g, query));
+    const argv = platform.commandArgv(keyword.target, query);
     if (!argv.length) throw new Error(`Keyword "${word}" has no command to run.`);
     await launch(argv, (message) => {
       // Replaces the success pill still on screen. Skipped if you have already

@@ -818,8 +818,8 @@
             search, and the words it should act on become the query.
             The transcript is sent to TypeSafe for this; with no keywords, nothing
             is sent. <code>%s</code> marks where the query goes; with
-            no <code>%s</code> a URL just gets it appended. Commands run without a
-            shell, so the query stays one argument no matter what is in it. A
+            no <code>%s</code> a URL just gets it appended. Nothing in the query
+            is ever run as part of a command; it stays one piece of text. A
             keyboard macro ignores the query and works the keyboard instead. An
             alias pastes the text you wrote for it, the same way a transcript
             would be pasted; <code>%s</code> in that text becomes the query, and
@@ -834,16 +834,20 @@
             <summary>How a command runs</summary>
             <div class="how-body">
               <p>
-                <b>The target is a program and its arguments</b>, split on spaces;
-                <code>"quotes"</code> keep words together. <code>%s</code> becomes
-                what you said, as one argument, however many words it is.
+                <b>On macOS and Linux the target is a shell command</b>, written
+                the way you would type it in a terminal: <code>&amp;&amp;</code>,
+                pipes and quotes work. <code>%s</code> stands for what you said,
+                as one piece of text, bare or inside quotes; your words are never
+                read as shell.
               </p>
               <p>
-                <b>It runs directly, not through a shell, and without a window.</b>
-                Nothing it prints is shown, so a command is for starting things,
-                not for reading their output. Pipes, <code>&gt;</code> and
-                variables do not work; point the target at <code>cmd /c</code> or
-                <code>sh -c</code> yourself if you need them.
+                <b>On Windows the target is a program and its arguments</b>, split
+                on spaces; <code>"quotes"</code> keep words together. It runs
+                without a shell, so <code>&amp;&amp;</code> and pipes do not work.
+              </p>
+              <p>
+                <b>It runs without a window.</b> Nothing it prints is shown, so a
+                command is for starting things, not for reading their output.
               </p>
               <p>
                 <b>Give the program's full path.</b> The app does not see your

@@ -535,16 +535,22 @@ as the description “The user says ‘word’” until you rewrite it.
 | Run a command | `notepad.exe %s` | runs notepad with one argument, `capital of Indiana` |
 | Run a macro | `ctrl+c 400ms ctrl+v` | runs that keyboard macro; the rest of the sentence is ignored |
 
-Commands run **without a shell**, so nothing you say can be read as a shell
-operator — the query is passed as a single argument whatever is in it. That
-also means:
+On macOS and Linux a command is a `/bin/sh` script, so it reads the way it would
+in a terminal: `&&`, pipes, redirects, `~` and quotes all work. What you said is
+never pasted into that script. It is handed to the shell as a separate value,
+and each `%s` refers to it, so an apostrophe, `&&` or `$(…)` in your sentence is
+only ever text. `%s` works bare, inside `"double"` quotes or inside `'single'`
+quotes, and in each case it is the whole query as one piece:
 
-- Pipes, redirects and `$variables` do not work. Point the target at
-  `cmd /c …`, `sh -c …` or `powershell -Command …` yourself if you want them —
-  but note that pasting the query into a script's *source* is exactly what the
-  no-shell design avoids, and a spoken apostrophe is enough to break it.
-- The target is split on spaces, honouring `"quotes"` one level deep. Nested
-  quotes are not parsed; put anything complicated in a script file instead.
+```sh
+claude -p "Be direct, short and sweet: %s" && claude -p "/talk"
+```
+
+On Windows a command runs without a shell. `cmd.exe` expands values before it
+reads operators, so it has no safe way to keep what you said as text. The
+target is split on spaces, honouring `"quotes"` one level deep, and `%s`
+becomes one argument. Point the target at a script file if you need shell
+syntax there.
 
 ### Groups
 

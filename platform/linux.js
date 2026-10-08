@@ -15,6 +15,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { shellArgv } = require('../command');
 const { execFile } = require('child_process');
 const { app } = require('electron');
 
@@ -142,6 +143,8 @@ module.exports = {
   pythonPath: () => path.join(ROOT, '.venv', 'bin', 'python3'),
 
   launchAppTarget: () => `${path.join(ROOT, 'launch-app.sh')} %s`,
+
+  commandArgv: shellArgv,
 
   commandExample: '/usr/bin/gedit %s',
 

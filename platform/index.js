@@ -14,6 +14,9 @@
 //                so, because a recorder that cannot suppress still records
 //   ducking      turning other apps down uses a different audio stack
 //   autostart    login items are a registry key, a plist, or a .desktop file
+//   commandArgv  a command keyword is a shell script on macOS and Linux, and a
+//                split argument list on Windows, where cmd.exe cannot keep the
+//                spoken query from being parsed (see command.js)
 //
 // Adding a platform means adding one file here and nothing else. Each adapter
 // exports the same shape; `capabilities()` is how the UI asks what is missing

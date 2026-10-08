@@ -12,6 +12,7 @@
 //     prompt once, so `capabilities()` reports the state on every launch.
 
 const path = require('path');
+const { shellArgv } = require('../command');
 const { execFile } = require('child_process');
 const { app, systemPreferences } = require('electron');
 
@@ -86,6 +87,8 @@ module.exports = {
   pythonPath: () => path.join(ROOT, '.venv', 'bin', 'python3'),
 
   launchAppTarget: () => `${path.join(ROOT, 'launch-app.sh')} %s`,
+
+  commandArgv: shellArgv,
 
   commandExample: '/usr/bin/open -a TextEdit %s',
 

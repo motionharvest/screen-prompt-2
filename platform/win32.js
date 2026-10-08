@@ -2,6 +2,7 @@
 // here is the original implementation with the paths and comments intact.
 
 const path = require('path');
+const { splitArgv } = require('../command');
 const { execFile, spawn } = require('child_process');
 const { app } = require('electron');
 const { UiohookKey } = require('uiohook-napi');
@@ -186,6 +187,8 @@ module.exports = {
   // The keyword target that turns "Launch Spotify" into a running Spotify.
   launchAppTarget: () =>
     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${path.join(ROOT, 'launch-app.ps1')}" %s`,
+
+  commandArgv: splitArgv,
 
   commandExample: 'C:\\Windows\\notepad.exe %s',
 
