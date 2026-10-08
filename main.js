@@ -27,6 +27,7 @@ const {
 } = require('./stats');
 const { typesafeApiKey, keywordEntry, classifyIntent } = require('./intent');
 const { createCueCounter } = require('./markers');
+const { fill, hasPlaceholder } = require('./command');
 
 // ---------------------------------------------------------------- settings --
 
@@ -2009,6 +2010,7 @@ async function matchKeyword(text) {
     type: keywordType(intent.type),
     target: intent.target,
     query: intent.query,
+    transcript: text,
   };
 }
 
@@ -2078,7 +2080,7 @@ function launch(argv, onLateFailure) {
 
 // Returns the line to show in the overlay.
 async function runKeyword(keyword) {
-  const { word, query } = keyword;
+  const { word, query, transcript } = keyword;
   const pretty = word.charAt(0).toUpperCase() + word.slice(1);
   if (keyword.type === 'keys') {
     const steps = parseMacro(keyword.target);
@@ -2103,11 +2105,11 @@ async function runKeyword(keyword) {
     return `⌨ ${pretty} — ${prettyMacro(keyword.target)}`;
   }
   if (keyword.type === 'alias') {
-    const verb = await deliver(keyword.target.replace(/%s/g, query).trim());
+    const verb = await deliver(fill(keyword.target, { s: query, t: transcript }).trim());
     return `✓ ${verb} ${pretty}`;
   }
   if (keyword.type === 'command') {
-    const argv = platform.commandArgv(keyword.target, query);
+    const argv = platform.commandArgv(keyword.target, query, transcript);
     if (!argv.length) throw new Error(`Keyword "${word}" has no command to run.`);
     await launch(argv, (message) => {
       // Replaces the success pill still on screen. Skipped if you have already
@@ -2118,9 +2120,10 @@ async function runKeyword(keyword) {
     return `▶ ${pretty}${query ? ` — ${query}` : ''}`;
   }
   const encoded = encodeURIComponent(query);
-  // No %s means the query goes on the end, the way a bare search prefix works.
-  const url = keyword.target.includes('%s')
-    ? keyword.target.replace(/%s/g, encoded)
+  // No placeholder means the query goes on the end, the way a bare search
+  // prefix works.
+  const url = hasPlaceholder(keyword.target)
+    ? fill(keyword.target, { s: encoded, t: encodeURIComponent(transcript) })
     : keyword.target + encoded;
   await shell.openExternal(url);
   return `↗ ${pretty}${query ? ` — ${query}` : ''}`;

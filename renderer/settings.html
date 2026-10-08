@@ -817,8 +817,10 @@
             phrase it however you like: “look up the capital of Indiana” runs the
             search, and the words it should act on become the query.
             The transcript is sent to TypeSafe for this; with no keywords, nothing
-            is sent. <code>%s</code> marks where the query goes; with
-            no <code>%s</code> a URL just gets it appended. Nothing in the query
+            is sent. <code>%s</code> marks where the query goes;
+            <code>%t</code> is your whole sentence as you said it, for
+            handing a request on in full. With neither, a URL just gets the
+            query appended. Nothing in the query
             is ever run as part of a command; it stays one piece of text. A
             keyboard macro ignores the query and works the keyboard instead. An
             alias pastes the text you wrote for it, the same way a transcript
@@ -836,9 +838,9 @@
               <p>
                 <b>On macOS and Linux the target is a shell command</b>, written
                 the way you would type it in a terminal: <code>&amp;&amp;</code>,
-                pipes and quotes work. <code>%s</code> stands for what you said,
-                as one piece of text, bare or inside quotes; your words are never
-                read as shell.
+                pipes and quotes work. <code>%s</code> and <code>%t</code> each
+                stand for one piece of text, bare or inside quotes; your words
+                are never read as shell.
               </p>
               <p>
                 <b>On Windows the target is a program and its arguments</b>, split

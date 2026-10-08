@@ -535,21 +535,30 @@ as the description “The user says ‘word’” until you rewrite it.
 | Run a command | `notepad.exe %s` | runs notepad with one argument, `capital of Indiana` |
 | Run a macro | `ctrl+c 400ms ctrl+v` | runs that keyboard macro; the rest of the sentence is ignored |
 
+`%s` is the query: the part of the sentence the model picks as what the action
+acts on, with the words that only ask for the action left off. That suits a
+search. It does not suit handing a request to an agent, where “Commander, close
+all my terminal windows” would arrive as “all my terminal windows”, and a
+question can arrive empty. `%t` is the whole sentence exactly as you said it,
+with no model choosing which words count. Both work in every keyword type, and
+a URL with either one gets nothing appended.
+
 On macOS and Linux a command is a `/bin/sh` script, so it reads the way it would
 in a terminal: `&&`, pipes, redirects, `~` and quotes all work. What you said is
-never pasted into that script. It is handed to the shell as a separate value,
-and each `%s` refers to it, so an apostrophe, `&&` or `$(…)` in your sentence is
-only ever text. `%s` works bare, inside `"double"` quotes or inside `'single'`
-quotes, and in each case it is the whole query as one piece:
+never pasted into that script. The query and the sentence are handed to the
+shell as separate values, and each `%s` or `%t` refers to one of them, so an
+apostrophe, `&&` or `$(…)` in your sentence is only ever text. A placeholder
+works bare, inside `"double"` quotes or inside `'single'` quotes, and in each
+case it is one unsplit piece:
 
 ```sh
-claude -p "Be direct, short and sweet: %s" && claude -p "/talk"
+claude -p "Be direct, short and sweet: %t" && claude -p "/talk"
 ```
 
 On Windows a command runs without a shell. `cmd.exe` expands values before it
 reads operators, so it has no safe way to keep what you said as text. The
-target is split on spaces, honouring `"quotes"` one level deep, and `%s`
-becomes one argument. Point the target at a script file if you need shell
+target is split on spaces, honouring `"quotes"` one level deep, and `%s` or
+`%t` becomes one argument. Point the target at a script file if you need shell
 syntax there.
 
 ### Groups

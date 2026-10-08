@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { spawnSync } = require('child_process');
-const { splitArgs, splitArgv, shellArgv } = require('./command');
+const { fill, hasPlaceholder, splitArgs, splitArgv, shellArgv } = require('./command');
 
 let failed = 0;
 const check = (label, fn) => {
@@ -15,8 +15,8 @@ const check = (label, fn) => {
 // Runs the target through the real shell. `p` prints each argument it receives
 // on its own line between brackets, so splitting would show. Its format lives
 // in $FMT because a %s written in a target is the query.
-const run = (target, query) => {
-  const argv = shellArgv(`p() { printf "$FMT" "$@"; }; ${target}`, query);
+const run = (target, query, transcript = '') => {
+  const argv = shellArgv(`p() { printf "$FMT" "$@"; }; ${target}`, query, transcript);
   const out = spawnSync(argv[0], argv.slice(1),
     { encoding: 'utf8', env: { ...process.env, FMT: '[%s]\\n' } });
   return out.stdout;
@@ -30,8 +30,24 @@ check('splitting keeps quoted words together', () => {
 });
 
 check('a split target gets the query as one argument', () => {
-  assert.deepStrictEqual(splitArgv('notepad.exe %s', 'capital of Indiana'),
+  assert.deepStrictEqual(splitArgv('notepad.exe %s', 'capital of Indiana', 'x'),
     ['notepad.exe', 'capital of Indiana']);
+});
+
+check('%t is the whole transcript, %s the query', () => {
+  assert.deepStrictEqual(
+    splitArgv('app %t -q %s', 'capital of Indiana', 'Google, capital of Indiana'),
+    ['app', 'Google, capital of Indiana', '-q', 'capital of Indiana']);
+});
+
+check('a placeholder inside a filled value is not filled again', () => {
+  assert.strictEqual(fill('a %s b %t', { s: '%t', t: '%s' }), 'a %t b %s');
+});
+
+check('either placeholder counts as one', () => {
+  assert.strictEqual(hasPlaceholder('https://x/?q=%t'), true);
+  assert.strictEqual(hasPlaceholder('https://x/?q=%s'), true);
+  assert.strictEqual(hasPlaceholder('https://x/?q='), false);
 });
 
 if (process.platform !== 'win32') {
@@ -63,6 +79,14 @@ if (process.platform !== 'win32') {
 
   check('an escaped quote does not change what %s sits in', () => {
     assert.strictEqual(run(`echo "say \\"%s\\""`, 'hi'), 'say "hi"\n');
+  });
+
+  check('%t reaches the shell as the whole sentence, in any quoting', () => {
+    const said = "Commander, what's on my screen?";
+    assert.strictEqual(run('p %t', '', said), `[${said}]\n`);
+    assert.strictEqual(run('p "say: %t"', '', said), `[say: ${said}]\n`);
+    assert.strictEqual(run("p 'say: %t'", '', said), `[say: ${said}]\n`);
+    assert.strictEqual(run('p %s %t', 'q', NASTY), `[q]\n[${NASTY}]\n`);
   });
 
   check('a target without %s still runs', () => {
